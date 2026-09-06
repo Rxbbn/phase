@@ -785,8 +785,22 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
             let phrase = format!("target {}", filter_text);
             let (base, rest) = parse_target(&phrase);
             let base = ensure_another_sacrifice_filter(base, &filter_text);
-            let (folded, _) = fold_article_led_type_union(base, rest);
-            folded
+            // FULL CONSUMPTION IS REQUIRED. A cost has nowhere to put a
+            // remainder, so anything the union leaves behind is a restriction
+            // that would silently vanish from the filter and WIDEN the set of
+            // permanents allowed to pay. Keep the folded union only when it
+            // consumed the whole phrase; otherwise fall back to the unfolded
+            // filter, which is the pre-existing and strictly narrower reading.
+            // No shipping card reaches this today — every article-led sacrifice
+            // union in the corpus ends at the cost/effect colon — so this is a
+            // guard against a future surface, not a fix for a live misparse.
+            let unfolded = base.clone();
+            let (folded, folded_rest) = fold_article_led_type_union(base, rest);
+            if folded_rest.trim().is_empty() {
+                folded
+            } else {
+                unfolded
+            }
         };
         return AbilityCost::Sacrifice(SacrificeCost::count(filter, use_count));
     }
@@ -2025,6 +2039,50 @@ mod tests {
     /// The article-less surface is the reach-guard: the shared grammar already
     /// unions it, so both must produce the same legs and the same distributed
     /// `Another`.
+    /// The union is accepted ONLY when it consumes the whole cost phrase.
+    ///
+    /// A cost has nowhere to put a remainder: whatever the fold leaves behind is
+    /// a restriction that would silently vanish from the filter, widening the set
+    /// of permanents that can pay it (CR 601.2h). The error is asymmetric, which
+    /// is why the fallback is the NARROW reading — a filter that is too narrow
+    /// refuses a payment the card allows and surfaces as a visible refusal, while
+    /// one that is too broad lets the cost be paid with a permanent the card
+    /// never named.
+    ///
+    /// No shipping card has this shape (every article-led sacrifice union in the
+    /// corpus ends at the cost/effect colon), so this is a guard against a future
+    /// surface. It is reachable: `parse_type_phrase_folding` readily leaves a
+    /// tail — "or a land", ", then draw a card", "unless you pay {1}".
+    ///
+    /// Revert-failing: drop the `folded_rest.trim().is_empty()` check and the
+    /// first case below folds to `Or[Creature+Another, Artifact]`, silently
+    /// dropping the third leg from a cost the parser never understood.
+    #[test]
+    fn sacrifice_cost_refuses_a_partially_consumed_union() {
+        // A three-leg surface the grammar only half-consumes: the union stops
+        // after the artifact and leaves "or a land" behind.
+        let cost = parse_oracle_cost("Sacrifice another creature or an artifact or a land");
+        let AbilityCost::Sacrifice(SacrificeCost { target, .. }) = &cost else {
+            panic!("expected a Sacrifice cost, got {cost:?}");
+        };
+        assert!(
+            !matches!(target, TargetFilter::Or { .. }),
+            "a partially consumed union must not be asserted as a filter, got {target:?}"
+        );
+
+        // Positive reach-guard, same test: the fully consumed surface still folds,
+        // so the assertion above is about REMAINDER and not about the fold being
+        // broken outright.
+        let ok = parse_oracle_cost("Sacrifice another creature or an artifact");
+        let AbilityCost::Sacrifice(SacrificeCost { target: ok_t, .. }) = &ok else {
+            panic!("expected a Sacrifice cost, got {ok:?}");
+        };
+        assert!(
+            matches!(ok_t, TargetFilter::Or { .. }),
+            "reach-guard: the fully consumed union must still fold, got {ok_t:?}"
+        );
+    }
+
     #[test]
     fn sacrifice_cost_unions_an_article_led_right_conjunct() {
         for (article_led, article_less, right) in [
