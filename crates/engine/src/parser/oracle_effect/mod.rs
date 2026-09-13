@@ -7974,6 +7974,29 @@ pub(crate) fn parse_effect_clause(text: &str, ctx: &mut ParseContext) -> ParsedE
     if let Some((_, _, partner)) = &live_meld_fields {
         ctx.pending_meld_partner = Some(partner.clone());
     }
+    // CR 611.2a: publish the peeled duration to the body parse. `peeled_text` no
+    // longer carries it, so a body parser that lowers onto NESTED
+    // `AbilityDefinition`s — where the duration re-attached below cannot reach —
+    // reads the printed window from here instead of fabricating one. Saved and
+    // restored around the call because `parse_effect_clause` recurses. The
+    // FALLBACK parse below re-parses the ORIGINAL text, which still carries the
+    // suffix, so the channel is explicitly CLOSED around it rather than left
+    // holding the enclosing clause's window.
+    //
+    // ONLY A TRAILING duration reaches here: `clause_shell::peel_clause` captures
+    // the window with `strip_trailing_duration`. A LEADING one ("Until end of
+    // combat, this creature gets ...") is captured further out as the chunk's
+    // `leading_duration` and lands on the enclosing `AbilityDefinition`, so it does
+    // NOT arrive on this channel and a nested branch reading it sees `None`. No
+    // corpus card pairs a leading duration with a nested-definition body (measured
+    // over all 35802 cards), so this is a known gap, not a live defect: closing it
+    // means plumbing `leading_duration` through to here, or making branch
+    // resolution inherit the parent window — and the latter is shared with every
+    // other nested-definition effect.
+    let outer_clause_duration = std::mem::replace(
+        &mut ctx.pending_clause_duration,
+        peel_ctx.duration().cloned(),
+    );
     let mut clause = parse_effect_clause_inner(&peeled_text, ctx);
     // Trial-parse fallback: peeling may have removed disambiguation signal
     // a specialized parser depends on (e.g., `the next spell you cast this
@@ -7981,9 +8004,12 @@ pub(crate) fn parse_effect_clause(text: &str, ctx: &mut ParseContext) -> ParsedE
     // retry with the original text. The shell is conservative — when in
     // doubt, leave the slot on the text and let the body parser handle it.
     if matches!(clause.effect, Effect::Unimplemented { .. }) {
+        ctx.pending_clause_duration = None;
         let fallback = parse_effect_clause_inner(text, ctx);
+        ctx.pending_clause_duration = outer_clause_duration;
         return attach_unless_slots(fallback, unless_condition, unless_pay_deferred);
     }
+    ctx.pending_clause_duration = outer_clause_duration;
     peel_ctx.apply_optional(&mut clause.optional);
     // Duration: route through `with_clause_duration` so
     // GenericEffect/GrantCastingPermission's embedded duration field

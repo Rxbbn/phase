@@ -92,6 +92,7 @@ mod bound_by_moonsilver_sacrifice_source_relative_6017;
 mod braids_arisen_nightmare_decline;
 mod brainspoil;
 mod breeches_blastmaker_coin_flip_copy;
+mod brightling_pt_disjunction_choice;
 mod brigid_mana_ability;
 mod bring_the_ending_corrupted_instead_branch_5683;
 mod bring_to_light_free_cast_2880;

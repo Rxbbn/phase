@@ -3,15 +3,18 @@
 Consolidated from 50 per-batch clustering passes over the whole card database. Synonymous per-batch clusters were merged into canonical root causes, their card lists unioned and deduped, and ranked by total card appearances (largest first).
 
 - **Canonical root causes:** 30
-- **Distinct cards implicated:** 4653
-- **Total card appearances across root causes:** 4686 (a card may appear under more than one root cause when it exhibits multiple distinct misparses)
+- **Distinct cards implicated:** 4644
+- **Total card appearances across root causes:** 4677 (a card may appear under more than one root cause when it exhibits multiple distinct misparses)
 
 > Counting method: both figures count the per-root-cause card bullets only — the
-> three metadata bullets above are excluded — and are the source of truth. The two
-> declared-count columns do not agree with them: measured 2026-09-11, the ranked
-> table's `# cards` column sums to 4693 and the section headings' `(N cards)` sum
-> to 4677, against 4686 listed bullets. The note under the table names the ten
-> sections responsible.
+> three metadata bullets above are excluded — and are the source of truth. Both
+> were RE-MEASURED from the file on 2026-09-13, not decremented from the previous
+> pass: the prior figures (4653 / 4686) were already stale by 3 before the "gets
+> +N/-M or -N/+M" removals landed, so decrementing them would have carried that
+> error forward. The two declared-count columns still do not agree: measured
+> 2026-09-13, the ranked table's `# cards` column sums to 4686 and the section
+> headings' `(N cards)` sum to 4670, against 4677 listed bullets. The note under
+> the table names the ten sections responsible.
 
 This is the prioritized "fix N root causes → unlock M cards" backlog: the top handful of root causes account for the majority of broken cards.
 
@@ -30,7 +33,7 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 | 9 | Wrong player/controller scope (You where Opponent/Scoped/Target/Defending needed) | 182 | oracle parser ControllerRef binding — resolve scoped/defending/iterated player refs instead of defaulting to You |
 | 10 | Trigger event/mode unrecognized → Unknown | 167 | oracle_trigger.rs — add typed TriggerMode variants for the unrecognized event classes |
 | 11 | Replacement / prevention / 'instead' effect mis-modeled | 153 | add-replacement-effect: route 'would … instead' into replacements[]; preserve damage_source/target filters |
-| 12 | Modal 'choose one/N' parsed as independent abilities | 138 | oracle.rs modal dispatch — detect 'Choose one —' header, wrap modes in Effect::ChooseOneOf |
+| 12 | Modal 'choose one/N' parsed as independent abilities | 132 | oracle.rs modal dispatch — detect 'Choose one —' header, wrap modes in Effect::ChooseOneOf |
 | 13 | State/game-state condition → StaticCondition::Unrecognized | 132 | oracle_nom/condition.rs parse_inner_condition — add typed variant for the predicate class |
 | 14 | Granted/quoted ability or continuous modification dropped | 96 | oracle_static.rs continuous-modification extraction — emit all conjuncts incl. GrantAbility/GrantKeyword |
 | 15 | Multi-target / 'up to N' optionality or count dropped | 83 | oracle_target.rs strip_optional_target_prefix — preserve MultiTargetSpec and optional_targeting |
@@ -54,22 +57,25 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 
 ## Full card lists per root cause
 
-> **Known count drift, measured 2026-09-11.** Ten sections disagree, in two
-> different ways.
+> **Known count drift, re-measured 2026-09-13.** Ten sections disagree, in two
+> different ways. (The 2026-09-11 pass recorded #2 as 583 vs 587; the list has
+> since moved and now measures 585, so these pairs are re-measured, not copied.)
 >
 > - **Section heading vs. its own list** (the ranked-table row repeats the
 >   heading), seven sections, given as declared vs. listed: #1 (744 vs 741),
->   #2 (583 vs 587), #3 (404 vs 403), #4 (387 vs 386), #5 (329 vs 332),
->   #13 (132 vs 131), #22 (43 vs 51). These net +9 and reconcile the heading sum
->   4677 to the list sum 4686.
+>   #2 (583 vs 585), #3 (404 vs 403), #4 (387 vs 386), #5 (329 vs 332),
+>   #13 (132 vs 131), #22 (43 vs 51). These net -7 and reconcile the heading sum
+>   4670 to the list sum 4677.
 > - **Ranked-table row vs. its section heading** (the heading matches its list),
 >   three sections, given as table vs. heading: #19 (67 vs 55), #30 (10 vs 7),
->   #31 (5 vs 4). These net +16 and reconcile the heading sum 4677 to the table
->   sum 4693.
+>   #31 (5 vs 4). These net +16 and reconcile the heading sum 4670 to the table
+>   sum 4686.
 >
-> The lists are authoritative; neither declared column has been recomputed after
-> past removals. Left uncorrected here deliberately — that is a whole-file hygiene
-> pass, not part of the card fix that touched root cause 27.
+> The lists are authoritative; neither declared column has been recomputed for
+> the seven/three sections named above. Left uncorrected here deliberately — that
+> is a whole-file hygiene pass, not part of the card fix that touched root cause
+> 27. Section 12's own heading and table row WERE corrected on 2026-09-13, since
+> that pass removed cards from it.
 
 ### 1. Relative-clause / filter restriction on target dropped  (744 cards)
 
@@ -3786,9 +3792,30 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 
 </details>
 
-### 12. Modal 'choose one/N' parsed as independent abilities  (138 cards)
+### 12. Modal 'choose one/N' parsed as independent abilities  (132 cards)
 
 **Signature.** Modal header (Choose one/two/one-or-both) not detected; bullet modes emitted as flat independent Spell abilities with no ChooseOneOf/Modal wrapper, so all modes resolve.
+
+> **The stated signature above is unreliable — do not re-open this category on it (measured 2026-09-13).**
+> A spell-level modal is wrapped by the sibling card-level `modal` field, NOT by
+> anything inside `abilities`, so the clustering pass that produced this category
+> read only `abilities` and mislabelled correct parses as "flat independent
+> abilities". `oracle_modal.rs` is 5293 lines (measured) and already carries
+> `ConditionalMaxChoices`, `mode_costs`, `allow_repeat_modes`,
+> `selection: TargetSelectionMode::Random` and `dynamic_max_choices`. This is
+> NOT a claim that the category is fixed: the residue is real, but it is OTHER
+> shapes wearing this label. The "gets <P/T> or <P/T>" resolution-time P/T
+> disjunction was one such shape — a choice offered by a resolving ability
+> (CR 608.2d), not a modal spell header. Its SIX listed cards (Brightling,
+> Shorecrasher Elemental, Multiform Wonder, Pemmin's Aura, Shaper Parasite and
+> Liliana of the Dark Realms) were removed from the list below on 2026-09-13; the
+> two other cards that print the same clause, Endling and Greater Morphling,
+> appeared nowhere in this file (verified by grep over the whole file,
+> 2026-09-13). Liliana was found only by RE-SCANNING the corpus with an X-AWARE
+> P/T token (`[+-]?[0-9X]+/[+-]?[0-9X]+`): her "+X/+X or -X/-X" is invisible to a
+> digit-only token, and she is the EIGHTH member of the class, not the seventh. Re-triage the remaining
+> entries by reading the whole parsed card, `modal` field included, before
+> treating any of them as a modal-dispatch defect.
 
 **Fix hint.** oracle.rs modal dispatch — detect 'Choose one —' header, wrap modes in Effect::ChooseOneOf
 
@@ -3811,7 +3838,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Azula Always Lies
 - Blood on the Snow
 - Branching Bolt
-- Brightling
 - Buccaneer's Bravado
 - Butcher of the Horde
 - Casualties of War
@@ -3867,18 +3893,15 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Let's Play a Game
 - Library of Lat-Nam
 - Lich's Mastery
-- Liliana of the Dark Realms
 - Lonely End
 - Lunar Avenger
 - Mercurial Transformation
 - Molten Collapse
-- Multiform Wonder
 - Nasty End
 - Nature's Blessing
 - Ojutai's Command
 - Ooze Flux
 - Pawpatch Formation
-- Pemmin's Aura
 - Pharika's Libation
 - Plow Through
 - Profane Command
@@ -3901,9 +3924,7 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Season of Gathering
 - See Double
 - Settle Beyond Reality
-- Shaper Parasite
 - Shifting Ceratops
-- Shorecrasher Elemental
 - Sigil Blessing
 - Sigurd, Jarl of Ravensthorpe
 - Skullscorch

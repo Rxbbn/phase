@@ -5,8 +5,8 @@
 
 use super::diagnostic::OracleDiagnostic;
 use crate::types::ability::{
-    ControllerRef, MultiTargetSpec, PlayerFilter, PtValue, QuantityExpr, QuantityRef, TargetFilter,
-    TargetSelectionMode,
+    ControllerRef, Duration, MultiTargetSpec, PlayerFilter, PtValue, QuantityExpr, QuantityRef,
+    TargetFilter, TargetSelectionMode,
 };
 use crate::types::zones::Zone;
 
@@ -294,6 +294,24 @@ pub(crate) struct ParseContext {
     /// host (Springheart Nantuko's landfall copy-token). `None` for non-Aura
     /// cards, so `ParentTarget` keeps its chosen-target semantics (Twinflame).
     pub host_self_reference: Option<TargetFilter>,
+    /// CR 611.2a: the duration the enclosing clause printed, peeled off the
+    /// clause head by `clause_shell::peel_clause` BEFORE the body parsers run
+    /// and re-attached to `ParsedEffectClause.duration` by `with_clause_duration`
+    /// after they return.
+    ///
+    /// A body parser that lowers the clause onto NESTED `AbilityDefinition`s
+    /// cannot read that re-attached value: the nested def is not the def the
+    /// duration lands on, and `build_resolved_from_def` reads the duration off
+    /// the nested def it actually resolves. The one consumer today is
+    /// `subject::build_pt_choice_clause`, whose `Effect::ChooseOneOf` branches
+    /// each carry the modification the choice applies (CR 608.2d). Without this
+    /// channel the branch had to fabricate a constant `UntilEndOfTurn`, which is
+    /// wrong for any printed window that is not end of turn.
+    ///
+    /// Set and restored around the body parse in `parse_effect_clause`; never
+    /// serialized. Read-only for consumers — the authority for the CLAUSE's own
+    /// duration remains `with_clause_duration`.
+    pub pending_clause_duration: Option<Duration>,
     /// CR 603.4: Transient relative-clause filter parsed from a
     /// trigger subject ("an opponent **who controls F** draws a card"). Set by
     /// `parse_single_subject` when it consumes a "who controls <filter>"
