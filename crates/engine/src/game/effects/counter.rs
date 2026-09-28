@@ -57,21 +57,7 @@ pub fn resolve(
     // doc); a counter that exiles nothing leaves it empty.
     state.exile_rider_countered_ids.clear();
 
-    let targets = match &ability.effect {
-        Effect::Counter { target, .. } if matches!(target, TargetFilter::ParentTarget) => {
-            let event_target = targeting::resolve_event_context_target(
-                state,
-                &TargetFilter::TriggeringSource,
-                ability.source_id,
-            );
-            match event_target {
-                Some(target) => vec![target],
-                None => targeting::resolved_targets(ability, target, state),
-            }
-        }
-        Effect::Counter { target, .. } => targeting::resolved_targets(ability, target, state),
-        _ => ability.targets.clone(),
-    };
+    let targets = countered_targets(state, ability);
 
     // CR 115.1: `Effect::Counter` is single-target by construction — mass
     // counter is `Effect::CounterAll`. The post-loop rider therefore acts on at
@@ -123,10 +109,7 @@ pub fn resolve(
 
             // Remove from stack — search by both id (spells) and source_id (abilities).
             // Use rposition to match the most recently pushed entry.
-            let stack_idx = state
-                .stack
-                .iter()
-                .rposition(|e| e.id == obj_id || e.source_id == obj_id);
+            let stack_idx = countered_stack_index(state, obj_id);
             if let Some(idx) = stack_idx {
                 // CR 701.6a: the removal IS the counter, so it goes through the
                 // single CR 405.2 removal authority, which journals it and drops
@@ -179,15 +162,25 @@ pub fn resolve(
                     // CR 702.34a / CR 702.127a / CR 702.180a: the exile destination
                     // is a static destination rule (not a replacement), so it is
                     // selected here, before the pipeline consult.
-                    let exile_instead_of_graveyard_on_counter =
-                        ability.sub_ability.as_deref().is_some_and(|sub| {
-                            super::cast_from_zone::graveyard_exile_rider_applies_to(
-                                state, sub, obj_id,
-                            )
-                        });
+                    let exile_rider = ability.sub_ability.as_deref().filter(|sub| {
+                        super::cast_from_zone::graveyard_exile_rider_applies_to(state, sub, obj_id)
+                    });
+                    let exile_instead_of_graveyard_on_counter = exile_rider.is_some();
                     if exile_instead_of_graveyard_on_counter {
                         state.exile_rider_countered_ids.push(obj_id);
                     }
+                    // CR 122.1 + CR 614.1a: the counters the applying rider puts
+                    // on the card it exiles (Delay: "exile it with three time
+                    // counters on it", issue #8795) travel with the move, so the
+                    // zone pipeline stamps them through the same counter
+                    // authority every other entry counter uses.
+                    let rider_entry_counters = exile_rider
+                        .map(|sub| {
+                            super::cast_from_zone::graveyard_exile_rider_entry_counters(
+                                state, sub, obj_id,
+                            )
+                        })
+                        .unwrap_or_default();
                     // CR 701.6a + CR 614.1a: choose the countered spell's
                     // destination. Exile precedence (alt-cost keyword exile-on-
                     // stack-exit, or the graveyard-exile sub-ability rider) wins
@@ -236,6 +229,9 @@ pub fn resolve(
                     // the stack (countered), so bail before `EffectResolved` and
                     // let the replacement-choice resume path deliver it.
                     let mut req = ZoneMoveRequest::effect(obj_id, dest, ability.source_id);
+                    if !rider_entry_counters.is_empty() {
+                        req = req.with_counters(rider_entry_counters);
+                    }
                     if let Some(position) = library_position {
                         // CR 701.6a + CR 614.1a: place at the named library
                         // position (Memory Lapse top / Spell Crumple bottom)
@@ -308,6 +304,36 @@ pub fn resolve(
     }
 
     Ok(())
+}
+
+/// The stack entry `resolve` removes for a countered `obj_id`: the most recently
+/// pushed entry whose id (a spell) or source (an ability) is `obj_id`.
+pub(super) fn countered_stack_index(state: &GameState, obj_id: ObjectId) -> Option<usize> {
+    state
+        .stack
+        .iter()
+        .rposition(|e| e.id == obj_id || e.source_id == obj_id)
+}
+
+/// CR 701.6a: the spells or abilities a `Counter` node counters. Shared by
+/// `resolve` and `stack_reach`, so a pending node is read with the resolver's
+/// own binding.
+pub(super) fn countered_targets(state: &GameState, ability: &ResolvedAbility) -> Vec<TargetRef> {
+    match &ability.effect {
+        Effect::Counter { target, .. } if matches!(target, TargetFilter::ParentTarget) => {
+            let event_target = targeting::resolve_event_context_target(
+                state,
+                &TargetFilter::TriggeringSource,
+                ability.source_id,
+            );
+            match event_target {
+                Some(target) => vec![target],
+                None => targeting::resolved_targets(ability, target, state),
+            }
+        }
+        Effect::Counter { target, .. } => targeting::resolved_targets(ability, target, state),
+        _ => ability.targets.clone(),
+    }
 }
 
 /// CR 701.6 + CR 405.1: Mass counter — iterate every stack entry and counter

@@ -2,8 +2,8 @@ use std::collections::HashSet;
 
 use crate::ai_support::copy_target_mana_value_ceiling;
 use crate::types::ability::{
-    AbilityDefinition, CopyTargetPurpose, Effect, PostReplacementContinuation, ResolvedAbility,
-    TargetFilter, TargetRef,
+    AbilityDefinition, AttachCardinality, AttachSelection, CopyTargetPurpose, Effect,
+    PostReplacementContinuation, ResolvedAbility, TargetFilter, TargetRef,
 };
 #[cfg(test)]
 use crate::types::ability::{EffectScope, TapStateChange};
@@ -455,6 +455,19 @@ fn handle_replacement_choice_inner(
                     }
                     enters_battlefield = to == Zone::Battlefield;
                     zone_change_object_id = Some(object_id);
+                    // CR 305.1 + CR 603.2: a played land whose pre-entry
+                    // shock/payment choice (`ReplacementResult::NeedsChoice`)
+                    // paused this delivery parked its `LandPlayed` occurrence in
+                    // `deferred_entry_events` (`park_land_played_for_deferred_entry`).
+                    // The land has now entered, so flush the parked events into
+                    // this action's `events` for the priority-time trigger scan,
+                    // so "play a land" observers (City of Traitors) fire against
+                    // the realized, post-choice object (issue #8738). Gated on a
+                    // non-empty deferred store so every other replacement-resumed
+                    // zone change keeps its unchanged path.
+                    if enters_battlefield {
+                        flush_deferred_entry_events_into_priority_scan(state, events);
+                    }
                 }
                 event @ ProposedEvent::TokenEntry { entry_ref, .. } => {
                     if state.has_post_replacement_drain() {
@@ -687,7 +700,21 @@ fn handle_replacement_choice_inner(
                 }
                 // CR 701.22a: Scry accepted after replacement choice.
                 scry @ ProposedEvent::Scry { .. } => {
+                    let events_before = events.len();
                     apply_scry_after_replacement(state, scry, events);
+                    // CR 701.22d: an empty-library scry publishes its event from
+                    // this replacement-choice handler, where resolve_chain_body's
+                    // recording does not see it, so record it here.
+                    for event in &events[events_before..] {
+                        if let GameEvent::PlayerPerformedAction {
+                            player_id, action, ..
+                        } = event
+                        {
+                            crate::game::effects::record_player_action_this_turn(
+                                state, *player_id, *action,
+                            );
+                        }
+                    }
                 }
                 // CR 701.37a: Explore accepted after replacement choice — the
                 // explore resolver handles the actual explore logic; this is a no-op here.
@@ -2664,6 +2691,9 @@ fn finish_copy_target_choice_entry(
                     Effect::Attach {
                         attachment: TargetFilter::SelfRef,
                         target: TargetFilter::Any,
+                        selection: AttachSelection::AtResolution {
+                            count: AttachCardinality::One,
+                        },
                     },
                     Vec::new(),
                     source_id,
@@ -2754,6 +2784,25 @@ pub(super) fn replay_deferred_entry_events(
         return Ok(Some(waiting_for));
     }
     Ok(None)
+}
+
+/// CR 305.1 + CR 603.2: The priority-settling counterpart to
+/// [`replay_deferred_entry_events`]. A played land whose pre-entry shock/payment
+/// choice (`ReplacementResult::NeedsChoice`) or delivery-tail counter-order
+/// choice (`ZoneDeliveryResult::NeedsChoice`) paused its entry parked its
+/// `LandPlayed` occurrence in `state.deferred_entry_events`
+/// (`park_land_played_for_deferred_entry`). Once the entry completes, that resume
+/// settles to `Priority`, so move the parked events into the action's `events`
+/// for the ordinary priority-time trigger scan (`run_post_action_pipeline`) to
+/// fire "play a land" observers (City of Traitors) against the realized object
+/// (issue #8738). The non-priority `NamedChoice` resume path instead replays
+/// through `replay_deferred_entry_events`, so the two are disjoint.
+pub(crate) fn flush_deferred_entry_events_into_priority_scan(
+    state: &mut GameState,
+    events: &mut Vec<GameEvent>,
+) {
+    let deferred = std::mem::take(&mut state.deferred_entry_events);
+    events.extend(deferred);
 }
 
 fn copy_effect_for_source(state: &GameState, source_id: ObjectId) -> Option<&AbilityDefinition> {
@@ -3261,6 +3310,13 @@ fn is_enters_counter_choice(branches: &[AbilityDefinition]) -> bool {
 /// `NamedChoice` + `ChooseOption` arm of `engine_resolution_choices.rs` for the
 /// other two shapes), so every ETB observer (constellation like Doomwake Giant,
 /// Soul Warden, …) sees the entry against the fully realized post-choice object.
+///
+/// For a played land, the sibling `GameEvent::LandPlayed` (emitted by
+/// `finalize_committed_land_play` in the land-play path) is captured alongside
+/// the entry `ZoneChanged`, so "play a land" observers (City of Traitors'
+/// "When you play another land, sacrifice this land", CR 305.1 + CR 603.2) also
+/// fire against the realized post-choice object rather than being dropped when
+/// the entry pauses on an as-enters choice (issue #8738).
 /// Without this, the entry event returns `WaitingFor::NamedChoice` instead of
 /// `Priority`, so the canonical priority-time trigger collection
 /// (`engine_priority::run_post_action_pipeline`) is skipped and every ETB
@@ -3327,6 +3383,10 @@ fn capture_deferred_entry_events_if_mid_entry_choice(
             event,
             GameEvent::ZoneChanged { object_id, to, .. }
                 if *object_id == source_id && *to == Zone::Battlefield
+        ) || matches!(
+            event,
+            GameEvent::LandPlayed { object_id, .. }
+                if *object_id == source_id
         ) {
             state.deferred_entry_events.push(event.clone());
         }
@@ -5032,8 +5092,10 @@ mod tests {
             enter_transformed: false,
             enter_as_copy: None,
             discard_frame: None,
+            performed_by: None,
             applied: std::collections::HashSet::new(),
             face_down_profile: None,
+            face_down_in_exile: crate::types::ability::ExileConcealment::Public,
             chain_referent: crate::types::zones::ChainReferentIntent::Silent,
         };
         let mut events = Vec::new();
@@ -5068,6 +5130,7 @@ mod tests {
                 display_name: "Soldier".to_string(),
                 power: Some(2),
                 toughness: Some(2),
+                loyalty: None,
                 core_types: vec![CoreType::Creature],
                 subtypes: vec!["Soldier".to_string()],
                 supertypes: Vec::new(),
@@ -5193,6 +5256,7 @@ mod tests {
                 display_name: "Treasure".to_string(),
                 power: None,
                 toughness: None,
+                loyalty: None,
                 core_types: vec![CoreType::Artifact],
                 subtypes: vec!["Treasure".to_string()],
                 supertypes: Vec::new(),
@@ -5351,6 +5415,7 @@ mod tests {
                 display_name: "Treasure".to_string(),
                 power: None,
                 toughness: None,
+                loyalty: None,
                 core_types: vec![CoreType::Artifact],
                 subtypes: vec!["Treasure".to_string()],
                 supertypes: Vec::new(),
@@ -5526,6 +5591,7 @@ mod tests {
                 display_name: "Treasure".to_string(),
                 power: None,
                 toughness: None,
+                loyalty: None,
                 core_types: vec![CoreType::Artifact],
                 subtypes: vec!["Treasure".to_string()],
                 supertypes: Vec::new(),
@@ -5680,6 +5746,7 @@ mod tests {
                 display_name: "Dog".to_string(),
                 power: Some(2),
                 toughness: Some(2),
+                loyalty: None,
                 core_types: vec![CoreType::Creature],
                 subtypes: vec!["Dog".to_string()],
                 supertypes: Vec::new(),
@@ -5817,6 +5884,7 @@ mod tests {
                 display_name: "Treasure".to_string(),
                 power: None,
                 toughness: None,
+                loyalty: None,
                 core_types: vec![CoreType::Artifact],
                 subtypes: vec!["Treasure".to_string()],
                 supertypes: Vec::new(),
@@ -7356,8 +7424,10 @@ mod tests {
             enter_transformed: false,
             enter_as_copy: None,
             discard_frame: None,
+            performed_by: None,
             applied: std::collections::HashSet::new(),
             face_down_profile: None,
+            face_down_in_exile: crate::types::ability::ExileConcealment::Public,
             chain_referent: crate::types::zones::ChainReferentIntent::Silent,
         };
         let result = replacement_mod::replace_event(&mut state, proposed, &mut events);
@@ -7563,8 +7633,10 @@ mod tests {
             enter_transformed: false,
             enter_as_copy: None,
             discard_frame: None,
+            performed_by: None,
             applied: std::collections::HashSet::new(),
             face_down_profile: None,
+            face_down_in_exile: crate::types::ability::ExileConcealment::Public,
             chain_referent: crate::types::zones::ChainReferentIntent::Silent,
         };
         let result = replacement_mod::replace_event(&mut state, proposed, &mut events);
@@ -7686,8 +7758,10 @@ mod tests {
             enter_transformed: false,
             enter_as_copy: None,
             discard_frame: None,
+            performed_by: None,
             applied: std::collections::HashSet::new(),
             face_down_profile: None,
+            face_down_in_exile: crate::types::ability::ExileConcealment::Public,
             chain_referent: crate::types::zones::ChainReferentIntent::Silent,
         };
         let result = replacement_mod::replace_event(&mut state, proposed, &mut events);
@@ -8144,8 +8218,10 @@ mod tests {
             enter_transformed: false,
             enter_as_copy: None,
             discard_frame: None,
+            performed_by: None,
             applied: std::collections::HashSet::new(),
             face_down_profile: None,
+            face_down_in_exile: crate::types::ability::ExileConcealment::Public,
             chain_referent: crate::types::zones::ChainReferentIntent::Silent,
         };
         let result = replacement_mod::replace_event(&mut state, proposed, &mut events);
