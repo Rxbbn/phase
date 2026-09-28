@@ -74261,10 +74261,46 @@ fn pt_conjunction_is_not_turned_into_a_choice() {
         "Target creature gets +1/+1 and gains flying until end of turn",
         AbilityKind::Spell,
     );
+    let grant = match &*def.effect {
+        Effect::TargetOnly {
+            target: TargetFilter::Typed(_),
+        } => def
+            .sub_ability
+            .as_deref()
+            .expect("targeted compound must retain its grant"),
+        Effect::GenericEffect {
+            target: Some(TargetFilter::Typed(_)),
+            ..
+        } => &def,
+        other => panic!("targeted compound must retain its target, got {other:?}"),
+    };
+    let Effect::GenericEffect {
+        static_abilities, ..
+    } = &*grant.effect
+    else {
+        panic!(
+            "ordinary `and` must lower to one compound grant, got {:?}",
+            grant.effect
+        );
+    };
     assert!(
-        !matches!(&*def.effect, Effect::ChooseOneOf { .. }),
-        "an `and` compound must not become a choice, got {:?}",
-        def.effect
+        grant.sub_ability.is_none(),
+        "the compound must not hide a second choice"
+    );
+    let modifications = &static_abilities[0].modifications;
+    assert!(
+        modifications.contains(&ContinuousModification::AddPower { value: 1 }),
+        "the pump's power must survive the conjunction: {modifications:?}"
+    );
+    assert!(
+        modifications.contains(&ContinuousModification::AddToughness { value: 1 }),
+        "the pump's toughness must survive the conjunction: {modifications:?}"
+    );
+    assert!(
+        modifications.contains(&ContinuousModification::AddKeyword {
+            keyword: Keyword::Flying,
+        }),
+        "flying must survive the conjunction: {modifications:?}"
     );
 }
 
@@ -74472,6 +74508,32 @@ fn pt_disjunction_branches_carry_the_printed_non_end_of_turn_window() {
             "CR 611.2a: the branch must carry the window the clause PRINTED; a \
              hardcoded UntilEndOfTurn would end this effect a turn early"
         );
+    }
+}
+
+/// CR 611.2a: a leading printed window is peeled before the P/T-choice body
+/// parser runs. The selected branch must inherit that window from the shared
+/// parse context rather than defaulting to end of turn.
+#[test]
+fn pt_disjunction_branches_carry_a_leading_non_end_of_turn_window() {
+    let def = parse_effect_chain(
+        "Until your next turn, this creature gets +1/-1 or -1/+1",
+        AbilityKind::Spell,
+    );
+    let expected = Duration::UntilNextTurnOf {
+        player: PlayerScope::Controller,
+    };
+    assert_eq!(def.duration, Some(expected.clone()));
+    let Effect::ChooseOneOf { branches, .. } = &*def.effect else {
+        panic!(
+            "the leading-duration clause must keep both choices: {:?}",
+            def.effect
+        );
+    };
+    assert_eq!(branches.len(), 2);
+    for branch in branches {
+        assert!(matches!(&*branch.effect, Effect::Pump { .. }));
+        assert_eq!(branch.duration, Some(expected.clone()));
     }
 }
 

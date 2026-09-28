@@ -4845,6 +4845,7 @@ fn build_pt_choice_clause(
     };
 
     Some(ParsedEffectClause {
+        unlowered_guard: None,
         effect,
         duration: None,
         sub_ability,
