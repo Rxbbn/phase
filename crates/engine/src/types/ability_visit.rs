@@ -449,6 +449,9 @@ where
         | ContinuousModification::AddKeywordWithDerivedCost { .. }
         | ContinuousModification::RemoveKeyword { .. }
         | ContinuousModification::RemoveAllAbilities
+        // CR 613.1f: a printed-slot index, not a nested ability carrier — the
+        // removed ability already lives on the affected object.
+        | ContinuousModification::RemoveSourceAbility { .. }
         | ContinuousModification::AddType { .. }
         | ContinuousModification::RemoveType { .. }
         | ContinuousModification::AddSubtype { .. }

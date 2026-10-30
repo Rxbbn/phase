@@ -1426,6 +1426,17 @@ pub(crate) fn parse_continuous_modifications(text: &str) -> Vec<ContinuousModifi
             LossMember::Abilities => {
                 modifications.push(ContinuousModification::RemoveAllAbilities);
             }
+            // CR 613.1f + CR 602.1: "loses this ability" removes exactly the
+            // printed activated ability the clause belongs to. The printed slot
+            // is not known here — this parser has no document position — so the
+            // index is left unbound and resolved post-assembly by
+            // `oracle_ir::doc::stamp_printed_ability_slot`, the same pass
+            // CR 707.9a's `RetainPrintedAbilityFromSource` uses.
+            LossMember::ThisAbility => {
+                modifications.push(ContinuousModification::RemoveSourceAbility {
+                    ability_index: None,
+                });
+            }
             LossMember::CreatureTypes => {
                 modifications.push(ContinuousModification::RemoveAllSubtypes {
                     set: crate::types::card_type::SubtypeSet::Creature,

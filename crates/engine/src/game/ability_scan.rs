@@ -6563,6 +6563,10 @@ fn scan_continuous_modification(m: &ContinuousModification, mode: ScanMode) -> A
         | ContinuousModification::SetPower { .. }
         | ContinuousModification::SetToughness { .. }
         | ContinuousModification::RemoveAllAbilities
+        // CR 613.1f: reads one printed slot of the affected object's OWN
+        // `base_abilities` — a per-object read, never a board aggregate or a
+        // projected player resource.
+        | ContinuousModification::RemoveSourceAbility { .. }
         | ContinuousModification::AddType { .. }
         | ContinuousModification::RemoveType { .. }
         | ContinuousModification::AddSubtype { .. }

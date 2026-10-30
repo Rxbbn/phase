@@ -28343,6 +28343,9 @@ fn immediate_modification_target_slot_filter(
         | ContinuousModification::GrantTrigger { .. }
         | ContinuousModification::GrantReplacement { .. }
         | ContinuousModification::RemoveAllAbilities
+        // CR 613.1f: the removal names a printed ability slot, not a quantity —
+        // no count-derived target slot, exactly like `RemoveAllAbilities`.
+        | ContinuousModification::RemoveSourceAbility { .. }
         | ContinuousModification::AddType { .. }
         | ContinuousModification::RemoveType { .. }
         | ContinuousModification::AddSubtype { .. }
@@ -44346,6 +44349,42 @@ pub enum ContinuousModification {
         replacement: Box<ReplacementDefinition>,
     },
     RemoveAllAbilities,
+    /// CR 613.1f + CR 611.2a: Layer 6 removal of ONE named printed activated
+    /// ability of the affected object, as opposed to `RemoveAllAbilities`'
+    /// total wipe (CR 613.1f lists ability-removing effects in layer 6).
+    ///
+    /// Written by "<object> loses this ability": Great Fang Chroniclers
+    /// ("Conjure a card named Muraganda Petroglyphs onto the battlefield, then
+    /// this creature loses this ability") and the twelve Licids ("This creature
+    /// loses this ability and becomes an Aura enchantment with enchant
+    /// creature"). CR 608.2m lets the activated ability that installs this
+    /// effect finish resolving after it has removed itself. Neither printed
+    /// text states a duration, so per CR 611.2a the installing effect carries
+    /// `Duration::Permanent` — it lasts until the end of the game (or, for a
+    /// Licid, until its CR 116.2c "pay {X} to end this effect" permission is
+    /// taken).
+    ///
+    /// `ability_index` addresses the affected object's own `base_abilities`
+    /// (the printed activated-ability track, CR 602.1), the index convention
+    /// `RetainPrintedAbilityFromSource` already uses. It is baked as `None` by
+    /// the clause lowerer — which does not know its own printed position — and
+    /// resolved post-assembly by `oracle_ir::doc::stamp_printed_ability_slot`,
+    /// the same stamping pass CR 707.9a's copy-except retains use.
+    ///
+    /// `Option<usize>` rather than the precedent's bare `usize` because this
+    /// variant's emission is NOT gated on a `ParseContext` printed index the
+    /// way `parse_has_this_ability` gates the retains: the recognizer lives in
+    /// the context-free `parse_continuous_modifications`. `None` therefore
+    /// means "this clause names no printed activated-ability slot" — e.g. a
+    /// triggered ability's body, whose "this ability" lives in
+    /// `base_trigger_definitions`, not `base_abilities` (CR 603.1 vs CR 602.1).
+    /// A `None` removal resolves to nothing (CR 609.3: an effect does only as
+    /// much as it can), so an unstamped modification can never strip the wrong
+    /// ability. No printed card produces the `None` form today.
+    RemoveSourceAbility {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ability_index: Option<usize>,
+    },
     AddType {
         core_type: CoreType,
     },

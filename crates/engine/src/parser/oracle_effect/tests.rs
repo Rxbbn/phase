@@ -31390,6 +31390,67 @@ fn dominating_licid_activation_is_not_optional() {
     );
 }
 
+/// CR 613.1f + CR 611.2a + CR 602.1: a Licid's "loses this ability" conjunct
+/// lowers to a layer-6 single-ability removal on the source, stamped with the
+/// activated ability's own printed slot, inside the same no-duration
+/// (`Permanent`) continuous effect that animates it into an Aura.
+///
+/// Whole-card parse, not a bare predicate: the printed slot is resolved by the
+/// post-assembly stamping pass in `oracle.rs`, which only runs over a parsed
+/// document. Before the fix the conjunct was silently dropped — the
+/// modification list began with `AddKeyword(Enchant)`.
+#[test]
+fn calming_licid_loses_this_ability_is_a_stamped_single_ability_removal() {
+    let parsed = crate::parser::oracle::parse_oracle_text(
+        "{W}, {T}: This creature loses this ability and becomes an Aura enchantment with \
+         enchant creature. Attach it to target creature. You may pay {W} to end this effect.\n\
+         Enchanted creature can't attack.",
+        "Calming Licid",
+        &[],
+        &["Creature".to_string()],
+        &[],
+    );
+    let def = &parsed.abilities[0];
+    let Effect::GenericEffect {
+        static_abilities,
+        duration,
+        ..
+    } = def.effect.as_ref()
+    else {
+        panic!("expected the animation GenericEffect, got {:?}", def.effect);
+    };
+    assert_eq!(
+        *duration,
+        Some(Duration::Permanent),
+        "CR 611.2a: no stated duration means until the end of the game"
+    );
+    let static_def = &static_abilities[0];
+    assert_eq!(
+        static_def.affected,
+        Some(TargetFilter::SelfRef),
+        "CR 613.1f: the Licid removes its OWN ability"
+    );
+    assert_eq!(
+        static_def.modifications.first(),
+        Some(&ContinuousModification::RemoveSourceAbility {
+            ability_index: Some(0)
+        }),
+        "the removal must lead the modification list, stamped with this \
+         ability's printed slot, got {:?}",
+        static_def.modifications
+    );
+    // Reach-guard: the animation conjuncts the removal shares the clause with
+    // are still produced, so the assertion above is not reading a clause that
+    // replaced them.
+    assert!(
+        static_def.modifications.iter().any(
+            |m| matches!(m, ContinuousModification::AddSubtype { subtype } if subtype == "Aura")
+        ),
+        "reach: the Aura animation survives beside the removal, got {:?}",
+        static_def.modifications
+    );
+}
+
 #[test]
 fn return_opponents_choice_from_your_graveyard_uses_zone_choice_chain() {
     let def = parse_effect_chain(

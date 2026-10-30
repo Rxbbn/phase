@@ -5504,6 +5504,26 @@ fn build_continuous_clause(
         duration
     };
 
+    // CR 613.1f + CR 611.2a: "<object> loses this ability" states no duration,
+    // and a continuous effect with no stated duration lasts until the end of
+    // the game. Left at `None` it would flip to `UntilEndOfTurn` in
+    // `effect.rs::resolve` and the removed ability would come back at cleanup —
+    // Great Fang Chroniclers' activated ability would be reusable next turn,
+    // and a Licid would regain the ability it is printed to lose while still an
+    // Aura. Only fires when NO duration was parsed, so an explicit turn-scoped
+    // loss would keep its stated duration. Mirrors the Suspend precedent above
+    // and the `build_become_clause` (CR 611.2b) default-permanent rule rather
+    // than flipping the global `effect.rs` fallback.
+    let duration = if duration.is_none()
+        && modifications
+            .iter()
+            .any(|m| matches!(m, ContinuousModification::RemoveSourceAbility { .. }))
+    {
+        Some(Duration::Permanent)
+    } else {
+        duration
+    };
+
     // CR 205.1b + CR 611.2a: an additive type grant — "becomes a <type> in
     // addition to its other [creature] types" (Sensei Golden-Tail's training
     // grant: "gains bushido 1 and becomes a Samurai in addition to its other

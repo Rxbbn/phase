@@ -5406,6 +5406,14 @@ fn fmt_modification(m: &crate::types::ability::ContinuousModification) -> String
         ContinuousModification::GrantTrigger { .. } => "grant trigger".into(),
         ContinuousModification::GrantReplacement { .. } => "grant replacement".into(),
         ContinuousModification::RemoveAllAbilities => "remove all abilities".into(),
+        // CR 613.1f: mirrors the `retain printed ability N` label — same printed
+        // slot vocabulary, opposite direction. An unstamped removal (no printed
+        // activated-ability slot) is labelled so it reads as a no-op rather than
+        // as a removal of slot 0.
+        ContinuousModification::RemoveSourceAbility { ability_index } => match ability_index {
+            Some(index) => format!("remove printed ability {index}"),
+            None => "remove printed ability (unbound)".into(),
+        },
         ContinuousModification::AddType { core_type } => {
             format!("add type {}", fmt_core_type(core_type))
         }
