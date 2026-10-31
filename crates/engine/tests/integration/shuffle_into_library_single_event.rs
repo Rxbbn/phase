@@ -535,6 +535,12 @@ fn optional_shuffle_into_library_shuffles_only_when_accepted() {
                 Zone::Graveyard,
                 "decline leg: Guan Yu died and stayed in the graveyard"
             );
+            // Reach guard: Murder AND Guan Yu's trigger both resolved (it fired and was declined).
+            let resolved = events
+                .iter()
+                .filter(|event| matches!(event, GameEvent::StackResolved { .. }))
+                .count();
+            assert_eq!(resolved, 2, "events: {events:?}");
             assert_eq!(shuffles(&events, P1), 0, "events: {events:?}");
         }
     }

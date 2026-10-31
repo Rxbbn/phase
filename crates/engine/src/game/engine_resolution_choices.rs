@@ -6611,7 +6611,8 @@ pub(super) fn handle_resolution_choice(
             // its prospective owner population before any selected member enters
             // the replacement pipeline. The prompt seam already retained an
             // empty typed participant when necessary; this extends that set.
-            if matches!(effect_kind, EffectKind::ChangeZone) {
+            // Only a move INTO a library has owners of a shuffled population.
+            if matches!(effect_kind, EffectKind::ChangeZone) && destination == Some(Zone::Library) {
                 if let Some(continuation) = state
                     .active_ability_continuation()
                     .map(|continuation| (*continuation.chain).clone())

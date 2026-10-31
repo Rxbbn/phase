@@ -603,9 +603,10 @@ fn append_effect_resolved_after_counter_pause(
 /// convention would randomize the same library a second time — a second
 /// `ShuffledLibrary` event, which CR 701.24f lets shuffle watchers count — so the
 /// member lands at a transient bottom position and the terminal `Shuffle` owns the
-/// single randomization per owner: it still runs when the move finds nothing to
-/// move (CR 701.24c-d, via `publish_named_owner_library_subjects`) and honors
-/// "can't shuffle". This is the single-object analogue of
+/// single randomization per owner: it still runs when a self-referential or
+/// optionally-targeted move finds nothing to move (CR 701.24c-d, via
+/// `publish_named_owner_library_subjects`; the other no-op early returns publish
+/// nothing and so shuffle nobody) and honors "can't shuffle". This is the single-object analogue of
 /// `MassLibraryShuffleMode::TerminalShuffle`; the marker is parser-stamped data on
 /// the chain's terminal `Shuffle`, found by the same chain scan that publishes the
 /// prospective owner population (`tracked_set_publication_mode`).
