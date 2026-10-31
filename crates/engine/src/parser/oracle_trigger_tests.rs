@@ -33847,41 +33847,6 @@ fn basalt_golem_delayed_sacrifice_names_the_blocker_and_its_controller() {
     );
 }
 
-/// Issue #10347 (class sibling) — Reality Acid: "When this Aura leaves the
-/// battlefield, enchanted permanent's controller sacrifices it." The same
-/// possessive-subject grammar, so "it" is the enchanted permanent, not the Aura.
-///
-/// Parse-level only, and the reason is measured rather than argued: a runtime
-/// row for this card — the Aura attached to an opponent's creature, destroyed
-/// off the battlefield through the production cast/resolve pipeline — leaves the
-/// enchanted creature on the battlefield, so this subject resolves to no object
-/// once the Aura has departed. Where in the referent ladder that is lost is
-/// deliberately not claimed here. What matters for this binding is that the
-/// outcome is identical at base, where the printed `SelfRef` subject found
-/// nothing in the battlefield-only sacrifice pool (CR 701.21a,
-/// `effects/sacrifice.rs`): the parse is corrected and nothing regresses. The
-/// discriminating runtime witness for the grammar lives on Basalt Golem, whose
-/// DELAYED trigger snapshots its referent while the blocker is still on the
-/// battlefield (`crates/engine/tests/integration/possessive_controller_object_anaphor.rs`).
-#[test]
-fn reality_acid_leaves_play_sacrifices_the_enchanted_permanent() {
-    let def = parse_trigger_line(
-        "When this Aura leaves the battlefield, enchanted permanent's controller sacrifices it.",
-        "Reality Acid",
-    );
-    let execute = def.execute.as_ref().expect("trigger should have execute");
-    assert_no_unimplemented(execute.as_ref());
-    match execute.effect.as_ref() {
-        Effect::Sacrifice { target, .. } => assert_eq!(
-            *target,
-            TargetFilter::ParentTarget,
-            "CR 608.2c: 'sacrifices it' names the enchanted permanent the subject's \
-             possessive introduced, never the Aura itself"
-        ),
-        other => panic!("expected a Sacrifice, got {other:?}"),
-    }
-}
-
 /// Issue #1670 — Star Athlete: "Whenever this creature attacks, choose up to
 /// one target nonland permanent. Its controller may sacrifice it. If they
 /// don't, this creature deals 5 damage to that player." The "that player"

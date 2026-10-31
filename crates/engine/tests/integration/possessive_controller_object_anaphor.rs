@@ -26,13 +26,8 @@
 //!   Whenever this creature becomes blocked by a creature, that creature's
 //!   controller sacrifices it at end of combat. If the player does, they create
 //!   a 0/2 colorless Wall artifact creature token with defender."
-//! - Reality Acid — "… When this Aura leaves the battlefield, enchanted
-//!   permanent's controller sacrifices it." The other card whose lowering this
-//!   corrects. Its parse is pinned in
-//!   `oracle_trigger_tests::reality_acid_leaves_play_sacrifices_the_enchanted_permanent`
-//!   rather than here: a departed Aura's attached-host referent is not
-//!   recoverable at resolution, which is a separate pre-existing gap from the
-//!   antecedent binding, so no runtime row can witness that card yet.
+//!   Basalt Golem is the one card in the printed class whose lowering this
+//!   change moves, so it carries the discriminating runtime rows.
 //! - Cerulean Sphinx — "Flying\n{U}: This creature's owner shuffles it into
 //!   their library." A source-possessive sibling, held here as a no-regression
 //!   row — see its own doc for what it does and does not pin.
@@ -281,6 +276,90 @@ fn a_blocker_that_already_left_sacrifices_nothing_and_makes_no_wall() {
         wall_tokens_of(runner.state(), P0),
         Vec::new(),
         "and certainly not for the Golem's controller"
+    );
+}
+
+/// CR 400.7 + CR 603.7c: the delayed instruction names the blocker it
+/// snapshotted, and a blocker that left and returned under the same storage id
+/// is a NEW object the instruction may not touch.
+///
+/// This is the currency guard on the referent the fix introduces. A
+/// `ParentTarget` that an ability PINNED resolves through
+/// `ResolvedAbility::live_object_targets`, which applies `target_pin_is_current`
+/// — so the blinked-back creature is dropped, nothing is sacrificed, and the
+/// gated Wall is not created. (The unpinned fallback rung of
+/// `targeting::resolved_targets` carries no such check, which is why
+/// `subject::subject_possessive_object_antecedent` refuses to pin a subject
+/// whose runtime referent would degrade to it.)
+#[test]
+fn a_blocker_that_blinked_back_is_a_new_object_and_is_not_sacrificed() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let golem = scenario
+        .add_creature_from_oracle(P0, "Basalt Golem", 2, 4, BASALT_GOLEM)
+        .id();
+    let blocker = scenario.add_creature(P1, "Blinking Blocker", 0, 5).id();
+    let mut runner = golem_blocked_by(scenario, golem, &[blocker]);
+
+    assert_eq!(
+        scheduled_end_of_combat_sacrifices(runner.state()),
+        1,
+        "reach guard: the becomes-blocked trigger scheduled its end-of-combat sacrifice"
+    );
+
+    // CR 400.7: battlefield -> exile -> battlefield returns a new object at the
+    // same `ObjectId`.
+    let before = runner.state().objects[&blocker].incarnation;
+    {
+        let mut events = Vec::new();
+        engine::game::zones::move_to_zone(runner.state_mut(), blocker, Zone::Exile, &mut events);
+        engine::game::zones::move_to_zone(
+            runner.state_mut(),
+            blocker,
+            Zone::Battlefield,
+            &mut events,
+        );
+    }
+    assert_eq!(
+        runner.state().objects[&blocker].zone,
+        Zone::Battlefield,
+        "reach guard: it came back"
+    );
+    assert!(
+        runner.state().objects[&blocker].incarnation > before,
+        "reach guard: a blink is a new incarnation at the same id"
+    );
+
+    drive_until(&mut runner, |state| {
+        state.phase == Phase::EndCombat && state.stack.is_empty()
+    });
+    runner.advance_until_stack_empty();
+
+    assert_eq!(
+        scheduled_end_of_combat_sacrifices(runner.state()),
+        0,
+        "reach guard: the delayed instruction fired and was consumed, so the absences \
+         below are measured after it resolved"
+    );
+    assert_eq!(
+        runner.state().objects.get(&blocker).map(|obj| obj.zone),
+        Some(Zone::Battlefield),
+        "CR 400.7: the returned creature is a new object and is not sacrificed"
+    );
+    assert_eq!(
+        runner.state().objects.get(&golem).map(|obj| obj.zone),
+        Some(Zone::Battlefield),
+        "and Basalt Golem is not a fallback subject for a sacrifice that found nothing"
+    );
+    assert_eq!(
+        wall_tokens_of(runner.state(), P1),
+        Vec::new(),
+        "no sacrifice happened, so the gated Wall is not created"
+    );
+    assert_eq!(
+        wall_tokens_of(runner.state(), P0),
+        Vec::new(),
+        "and none for the Golem's controller"
     );
 }
 

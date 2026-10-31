@@ -29565,16 +29565,22 @@ fn target_announcer_from_subject(
     }
 }
 
-/// CR 608.2c: Lower a subject-predicate clause with the subject seeded as the
-/// antecedent of the predicate's "that player" / "they". The seed only fills an
-/// empty relative scope: a scope an enclosing trigger, mode or for-each already
-/// pinned is the nearer antecedent and is kept.
+/// CR 608.2c + CR 608.2k: Lower a subject-predicate clause with the subject
+/// seeded as the antecedent of the predicate's anaphors — its OBJECT antecedent
+/// here, its PLAYER antecedent in
+/// [`lower_subject_predicate_ast_player_seeded`], which this calls.
 ///
-/// A declared player subject (`TargetPlayer` / `TargetOpponent`) is carried in
-/// the binder's declared rungs (`declared_player_scope` +
-/// `prior_player_declaration`); every other seed (an object subject's
-/// controller) is carried in `relative_player_scope`. Both are restored before
-/// returning, so the seed never leaks past this clause.
+/// The two seeds take OPPOSITE precedence, deliberately:
+///
+/// * The object pin WINS over an enclosing one. A possessive subject's
+///   possessor is printed in this very clause, so it is nearer than anything a
+///   trigger condition or an earlier chunk established, and the whole point of
+///   the pin is to beat `resolve_it_pronoun`'s source default.
+/// * The player seed YIELDS to an enclosing one (`relative_player_scope`
+///   already set). There the enclosing scope is the nearer antecedent — a
+///   trigger, mode or for-each frame the clause sits inside.
+///
+/// Both are restored before returning, so neither leaks past this clause.
 fn lower_subject_predicate_ast(
     subject: SubjectPhraseAst,
     predicate: PredicateAst,
@@ -29583,19 +29589,22 @@ fn lower_subject_predicate_ast(
     damage_context: DamageTargetContext,
 ) -> ParsedEffectClause {
     // CR 608.2c + CR 608.2k: a possessive-player subject ("that creature's
-    // controller", "target creature's owner") names its player only by way of
-    // the object that player controls or owns, so that POSSESSOR stays in scope
-    // as the nearest antecedent of a bare object pronoun in this clause's own
+    // controller", "its controller may") names its player only by way of the
+    // object that player controls or owns, so that POSSESSOR stays in scope as
+    // the nearest antecedent of a bare object pronoun in this clause's own
     // predicate — "that creature's controller sacrifices IT at end of combat"
-    // (Basalt Golem). See `subject::subject_possessive_object_antecedent` for
-    // the grammar and the exclusions.
-    // Pinning it here is what keeps `resolve_it_pronoun`'s `SelfRef` default
-    // (correct for a self-ETB "sacrifice it") from claiming a pronoun whose
-    // printed antecedent is the possessor. Scoped to the predicate lowering
-    // with the same save/restore discipline `with_player_scope` uses for the
-    // player antecedent, so the binding cannot leak into a sibling clause.
-    // `subject_possessive_object_antecedent` returns `None` for every other
-    // subject shape, which leaves the enclosing antecedent untouched.
+    // (Basalt Golem). Pinning it here is what keeps `resolve_it_pronoun`'s
+    // `SelfRef` default (correct for a self-ETB "sacrifice it") from claiming a
+    // pronoun whose printed antecedent is the possessor. See
+    // `subject::subject_possessive_object_antecedent` for the grammar, the
+    // required discriminant and the exclusions; it returns `None` for every
+    // other subject shape, which leaves the enclosing antecedent untouched.
+    //
+    // CR 509.3c + CR 608.2k: `condition_object_antecedent` is the companion
+    // field that says what an AMBIGUOUS `object_pronoun_ref` names, and it
+    // describes the pin it travelled with — so a nearer pin must not inherit
+    // the outer pin's label. Cleared alongside, by the same save/restore, which
+    // is why this seeds through one helper rather than writing the field.
     match subject::subject_possessive_object_antecedent(&subject) {
         Some(antecedent) => ctx.with_object_pronoun_ref(antecedent, |ctx| {
             lower_subject_predicate_ast_player_seeded(
@@ -29619,6 +29628,17 @@ fn lower_subject_predicate_ast(
 /// [`lower_subject_predicate_ast`] after the object antecedent is pinned: seeds
 /// the subject's PLAYER antecedent (CR 115.1 + CR 109.4) for the same predicate
 /// and lowers it.
+///
+/// The seed only fills an EMPTY relative scope: a scope an enclosing trigger,
+/// mode or for-each already pinned is the nearer antecedent and is kept. (The
+/// object pin in the caller takes the opposite precedence, for the reason
+/// stated there.)
+///
+/// A declared player subject (`TargetPlayer` / `TargetOpponent`) is carried in
+/// the binder's declared rungs (`declared_player_scope` +
+/// `prior_player_declaration`); every other seed (an object subject's
+/// controller) is carried in `relative_player_scope`. Both are restored before
+/// returning, so the seed never leaks past this clause.
 fn lower_subject_predicate_ast_player_seeded(
     subject: SubjectPhraseAst,
     predicate: PredicateAst,
@@ -50049,20 +50069,19 @@ fn parse_effect_chain_ir_body(
         // retained `is_optional` rung, exactly as it did at base — that rung is
         // not narrowed here.
         //
-        // Deliberately NARROWER than the clause-local pin
-        // (`subject::subject_possessive_object_antecedent`), which accepts every
-        // printed possessor including the ones that carry no discriminant at all
-        // (a `parse_target`-recognized possessor, the Acorn Catapult "or that
-        // player" disjunct). This scope spans SENTENCES, so widening it to a
-        // route with no discriminant would hand a later "that player" an
-        // antecedent on evidence the subject never printed as an anaphor. What
-        // the narrow rung costs is that the two discriminant-less possessive
-        // routes do not arm it — an attached-host subject ("enchanted
-        // permanent's controller") and the "<noun>'s controller or that player"
-        // disjunct (Acorn Catapult) — and no printed card pairs either with a
-        // gated "If the player does, they …" rider. A `ParentTargetOwner`
-        // possessive never arms this rung either; the owner scope below is its
-        // own, unconditional, single-shot local.
+        // The `ItsController` rung is the SAME predicate the clause-local pin
+        // (`subject::subject_possessive_object_antecedent`) requires, and that
+        // agreement is deliberate: both seams must answer "did this subject
+        // PRINT a possessor" the same way, or one of them binds an anaphor on
+        // evidence the other rejects. Two routes reach `ParentTargetController`
+        // while stamping no discriminant and so arm nothing here — an
+        // attached-host subject ("enchanted permanent's controller") and the
+        // "<noun>'s controller or that player" disjunct (Acorn Catapult) — and
+        // no printed card pairs either with a gated "If the player does,
+        // they …" rider. A `ParentTargetOwner` possessive never arms this rung
+        // either; the owner scope below is its own, unconditional, single-shot
+        // local. This rung keeps the extra `is_optional` leg the pin does not
+        // need, purely so no shape that armed at base stops arming.
         if leading_subject_application.as_ref().is_some_and(|app| {
             app.affected == TargetFilter::ParentTargetController
                 && (app.is_optional

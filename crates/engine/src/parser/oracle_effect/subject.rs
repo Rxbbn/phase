@@ -2875,95 +2875,118 @@ pub(super) fn subject_player_antecedent(subject: &SubjectPhraseAst) -> Option<Co
 /// player controls or owns, so the possessor is still in scope for the
 /// predicate and is the nearest antecedent its pronoun has. The printed shape
 /// is `"<determiner> <noun>'s controller|owner <verb>s it"` — "that creature's
-/// controller sacrifices IT at end of combat" (Basalt Golem), "enchanted
-/// permanent's controller sacrifices IT" (Reality Acid), "that creature's owner
-/// shuffles IT into their library" (Weeping Angel), "Target creature's owner
-/// shuffles IT into their library" (Ominous Cemetery), "That creature's owner
-/// puts IT on their choice of the top or bottom of their library" (Tolarian
-/// Contempt). CR 608.2c is the authorizing rule — "read the whole text and
-/// apply the rules of English to the text" — and CR 608.2k is what lets that
-/// untargeted reference keep naming the same object once the effect applies.
+/// controller sacrifices IT at end of combat" (Basalt Golem), "its controller
+/// may sacrifice IT" (Star Athlete), "that creature's owner shuffles IT into
+/// their library" (Weeping Angel), "Target creature's owner shuffles IT into
+/// their library" (Ominous Cemetery), "That creature's owner puts IT on their
+/// choice of the top or bottom of their library" (Tolarian Contempt). The new
+/// authority covers all of them on the typed AST; one card's lowering actually
+/// MOVES, because the rest are already claimed or already bound (below).
+/// CR 608.2c is the authorizing rule — "read the whole text and apply the rules
+/// of English to the text" — and CR 608.2k is what lets that untargeted
+/// reference keep naming the same object once the effect applies.
 ///
 /// `ParentTargetController` (CR 109.4) and `ParentTargetOwner` (CR 108.3) are
-/// exactly the actor filters this grammar's possessor produces, so the pronoun
-/// names `ParentTarget` — the same referent those two actors resolve through at
+/// the actor filters this grammar's possessor produces, so the pronoun names
+/// `ParentTarget` — the same referent those two actors resolve through at
 /// runtime (`ability_utils::parent_target_controller` / `parent_target_owner`).
-/// Measured base-to-head over the whole corpus, the lowerings this antecedent
-/// corrects are Basalt Golem's and Reality Acid's. Every other printed member
-/// of the shape is claimed by a DEDICATED WHOLE-CLAUSE OR WHOLE-BODY
-/// RECOGNIZER that runs before `parse_clause_ast` and derives the moved object
-/// from the possessor text itself, so it never reaches this function at all:
-/// `try_parse_owner_of_target_shuffle` (Ominous Cemetery, Watery Grasp,
-/// Cerulean Sphinx, and Weeping Angel's prevention rider),
-/// `try_parse_put_on_top_or_bottom` (Tolarian Contempt) and
-/// `try_parse_reanimator_aura_etb_effect_ir` (Animate Dead, Dance of the Dead),
-/// which hard-builds `Sacrifice { ParentTarget }` in `build_aura_attach_clause`.
 ///
-/// Two further rungs would reach the same `ParentTarget` value if a card ever
+/// # Two conditions, and the second is a safety property, not a nicety
+///
+/// The subject must resolve to one of those two actor filters AND must carry
+/// `PlayerAnaphor::ItsController`, the discriminant the four subject arms that
+/// print the possessive anaphor stamp ("its controller", "their controller",
+/// "[the|that] `<noun>`'s controller", plus their `may` forms). The same
+/// predicate gates the chain-spanning antecedent in `oracle_effect::mod`'s
+/// chunk loop, deliberately: the two seams must agree about what counts as a
+/// printed possessor.
+///
+/// Requiring the discriminant is what keeps this pin off referents that carry
+/// no CR 400.7 guard. `ParentTarget` resolves through a ladder
+/// (`targeting::resolved_targets`) whose last rung, for an ability that pinned
+/// no target, falls back to the ability's own source object WITHOUT the
+/// self-reference currency check the `SelfRef` arm of that same function
+/// applies. Pinning a possessive subject whose runtime referent degrades to
+/// that rung therefore converts a CR 400.7-correct no-op into an action on a
+/// source that left and returned under the same storage id. Measured: Reality
+/// Acid's "enchanted permanent's controller sacrifices it" reaches
+/// `ParentTargetController` through `parse_target`'s verbatim attached-host
+/// recognizer and the generic `subject_filter_application`, which stamp no
+/// discriminant, and its leaves-the-battlefield trigger pins nothing — so
+/// pinning it made an Aura blinked back in response get sacrificed, where the
+/// printed `SelfRef` subject had correctly found nothing. It is left on that
+/// guarded referent (an unchanged, pre-existing misparse) rather than moved
+/// onto an unguarded one. Basalt Golem is unaffected either way: its DELAYED
+/// ability snapshots the blocker into `ability.targets`, so resolution runs
+/// through `ResolvedAbility::live_object_targets`, which applies
+/// `target_pin_is_current`.
+///
+/// # Why the measured blast radius is one card (Basalt Golem)
+///
+/// Every other printed member of the shape is claimed by a DEDICATED
+/// WHOLE-CLAUSE recognizer that runs before `parse_clause_ast` and derives the
+/// moved object from the possessor text itself, so it never reaches this
+/// function at all: `try_parse_owner_of_target_shuffle` (Ominous Cemetery,
+/// Watery Grasp, Cerulean Sphinx, and Weeping Angel's prevention rider) and
+/// `try_parse_put_on_top_or_bottom` (Tolarian Contempt). Animate Dead and
+/// Dance of the Dead are built by `try_parse_reanimator_aura_etb_effect_ir`,
+/// which hard-codes `Sacrifice { ParentTarget }` in `build_aura_attach_clause`;
+/// Necromancy prints the same sentence but is NOT claimed by that recognizer's
+/// grant-shape sibling — its whole ETB line is a `granter_reference_unreached`
+/// gap at base and at head, so its possessive never reaches this seam either.
+/// Two further rungs would reach the same `ParentTarget` value if a card
 /// arrived through them, which is why the pin is idempotent rather than
-/// additive — an earlier clause's declared referent via `prior_typed_referent`
-/// (`oracle_effect::mod`'s chunk loop), and
-/// `oracle_replacement::rewrite_parent_target_to_post_replacement_damage_target`.
-/// Neither has a printed example that reaches this function today.
+/// additive — an earlier clause's declared referent via `prior_typed_referent`,
+/// and `oracle_replacement::rewrite_parent_target_to_post_replacement_damage_target`.
 ///
-/// An ATTACHED-HOST possessor ("enchanted <noun>'s controller") reaches these
-/// filters only for the one noun `parse_target` recognizes, which is why
-/// Reality Acid qualifies and the rest of that family does not. Widening that
-/// recognizer is deliberately NOT part of this change: measured, the widened
-/// parse makes Parasitic Implant's "At the beginning of your upkeep, enchanted
-/// creature's controller sacrifices it" sacrifice NOTHING, because its phase
-/// trigger stamps `scoped_player` with the ACTIVE player (`triggers.rs`,
-/// CR 603.2b) and `sacrifice.rs`'s `ParentTarget` rung prefers that stamp over
-/// the object's own controller — so the correct subject becomes unauthorized
-/// (CR 701.21a) and the Aura mints its token every upkeep forever instead of
-/// sacrificing itself once. That actor rung is a separate defect; fixing it is
-/// what unlocks the rest of the attached-host family.
-///
-/// Three subject shapes that DO resolve to these filters are excluded:
+/// # What the discriminant requirement excludes
 ///
 /// * A SOURCE-possessive subject ("~'s controller sacrifices it" — Soul Ransom)
 ///   produces `TargetFilter::SourceController`, never either parent-target
 ///   actor, so it cannot reach this function at all: its possessor IS the
 ///   ability's own source.
-/// * A BARE player anaphor ("that player", "the player") prints no possessor,
-///   yet resolves to `ParentTargetController` outside trigger context.
-/// * A BARE "they" / "they may" / "they each" subject likewise prints no
-///   possessor, and `resolve_they_pronoun` hands it `ParentTargetController`
-///   whenever the chain-spanning antecedent is armed.
+/// * The BARE player anaphors — "that player" / "the player"
+///   (`PlayerAnaphor::ThatPlayer`) and "they" / "they may" / "they each"
+///   (`PlayerAnaphor::They`) — print no possessor. They RE-STATE an antecedent
+///   an earlier clause introduced rather than introducing one, so pinning their
+///   predicate's pronoun would override a nearer binding the trigger condition
+///   or the chain already established.
+/// * Three routes print a possessor, or none, while stamping no discriminant,
+///   and are excluded with it: the generic `subject_filter_application` route a
+///   `parse_target`-recognized possessor takes (Reality Acid, above), the
+///   "`<noun>'s controller or that player`" disjunct (Acorn Catapult), and the
+///   attacking-player anaphor, which prints no possessor and reaches
+///   `ParentTargetController` whenever no nearer player scope is live. The one
+///   printed attacking-player subject with a bare object pronoun in its
+///   predicate (Contested Game Ball, "the attacking player gains control of
+///   this artifact and untaps it") answers with its event-context filter and is
+///   measured unchanged base-to-head.
 ///
-/// Both pronoun forms RE-STATE an antecedent some earlier clause introduced
-/// rather than introducing one, so pinning their predicate's pronoun would
-/// override a nearer binding the trigger condition or the chain already
-/// established. `PlayerAnaphor::ThatPlayer` and `PlayerAnaphor::They` are the
-/// discriminants, and both are refused below.
-///
-/// The refusal is keyed on a discriminant rather than on an exhaustive match
-/// because three further routes reach these filters carrying
-/// `player_anaphor: None`, and two of them DO print a possessor: the generic
-/// `subject_filter_application` route a `parse_target`-recognized possessor
-/// takes (Reality Acid's own route), the "`<noun>'s controller or that player`"
-/// disjunct (Acorn Catapult), and the attacking-player anaphor — which prints
-/// none, and reaches `ParentTargetController` whenever no nearer player scope
-/// is live: outside trigger context, or inside one whose chain has armed
-/// `ParentTargetController`. The one printed attacking-player subject with a
-/// bare object pronoun in its predicate (Contested Game Ball, "the attacking
-/// player gains control of this artifact and untaps it") arms no such scope,
-/// answers with its event-context filter, and is measured unchanged
-/// base-to-head.
+/// The owner half of the grammar is reachable in principle but not in practice:
+/// the four `its owner` / `[the|that] <noun>'s owner` subject arms stamp
+/// `player_anaphor: None` where their controller counterparts stamp
+/// `ItsController`. That asymmetry is pre-existing and is left alone here;
+/// `ParentTargetOwner` stays in the accepted set because it is the same printed
+/// grammar, and a future card arriving with the discriminant should bind.
 ///
 /// Declines a multi-target subject for the same reason
 /// [`subject_player_antecedent`] does: each announced object is the antecedent
-/// in turn, so no single `ParentTarget` can stand for them.
+/// in turn, so no single `ParentTarget` can stand for them. No route that
+/// yields either actor filter builds a `multi_target` today, so that guard
+/// mirrors the sibling rather than gating a reachable shape.
+///
+/// NOT a field-for-field sibling of [`subject_player_antecedent`], which keys
+/// on `subject.target` and returns `None` whenever it is absent. This keys on
+/// `subject.affected`, because a possessive-player subject announces no object
+/// target of its own — the possessor is the referent its ACTOR filter resolves
+/// through, which is what `affected` carries.
 pub(super) fn subject_possessive_object_antecedent(
     subject: &SubjectPhraseAst,
 ) -> Option<TargetFilter> {
     if subject.multi_target.is_some() {
         return None;
     }
-    if matches!(
-        subject.player_anaphor,
-        Some(PlayerAnaphor::ThatPlayer | PlayerAnaphor::They)
-    ) {
+    if !matches!(subject.player_anaphor, Some(PlayerAnaphor::ItsController)) {
         return None;
     }
     matches!(
@@ -8871,6 +8894,9 @@ mod tests {
     use crate::types::identifiers::TrackedSetId;
     use crate::types::statics::BlockExceptionKind;
 
+    /// A possessive-player subject phrase as the four printed-possessive arms
+    /// build it: the actor filter plus the `ItsController` discriminant the pin
+    /// requires.
     fn subject_phrase_with(affected: TargetFilter) -> SubjectPhraseAst {
         SubjectPhraseAst {
             affected: Some(affected),
@@ -8878,7 +8904,7 @@ mod tests {
             multi_target: None,
             inherits_parent: false,
             is_optional: false,
-            player_anaphor: None,
+            player_anaphor: Some(PlayerAnaphor::ItsController),
         }
     }
 
@@ -8925,10 +8951,13 @@ mod tests {
         }
     }
 
-    /// CR 608.2c + CR 608.2k: the possessor of a parent-target possessive-player
-    /// subject is the antecedent its predicate's bare object pronoun names; a
-    /// source-possessive or non-possessive subject introduces none, and a
-    /// multi-target subject names no single object.
+    /// CR 608.2c + CR 608.2k: the possessor of a PRINTED-possessive
+    /// parent-target subject is the antecedent its predicate's bare object
+    /// pronoun names. A source-possessive or non-possessive actor introduces
+    /// none; a multi-target subject names no single object; and a subject that
+    /// resolves to the same actor filter WITHOUT printing the possessive
+    /// anaphor is refused, which is what keeps the pin off referents that carry
+    /// no CR 400.7 currency guard (Reality Acid's attached-host route).
     #[test]
     fn a_parent_target_possessive_subject_names_its_possessor() {
         for actor in [
@@ -8984,13 +9013,21 @@ mod tests {
                  clause introduced, so its predicate's pronoun keeps the nearer binding"
             );
         }
+        // CR 400.7: a subject that reaches the actor filter without printing
+        // the possessive anaphor is refused. `parse_target`'s attached-host
+        // recognizer and the "`<noun>'s controller or that player`" disjunct
+        // both land here, and Reality Acid is the measured reason: its
+        // leaves-the-battlefield trigger pins no target, so a `ParentTarget`
+        // pin would degrade to the unguarded source-fallback rung of
+        // `targeting::resolved_targets` and sacrifice an Aura blinked back in
+        // response, where its printed `SelfRef` subject correctly finds nothing.
         assert_eq!(
             subject_possessive_object_antecedent(&SubjectPhraseAst {
-                player_anaphor: Some(PlayerAnaphor::ItsController),
+                player_anaphor: None,
                 ..subject_phrase_with(TargetFilter::ParentTargetController)
             }),
-            Some(TargetFilter::ParentTarget),
-            "the printed possessive anaphor still introduces its possessor"
+            None,
+            "an undiscriminated route to the same actor filter must not be pinned"
         );
     }
 
