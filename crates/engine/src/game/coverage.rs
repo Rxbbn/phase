@@ -10864,7 +10864,7 @@ fn condition_feature(cond: &AbilityCondition) -> (&'static str, FeatureSupport) 
         AbilityCondition::Or { .. } => ("Or", Handled),
         // CR 608.2c: Logical negation — handled by evaluate_condition (effects/mod.rs).
         AbilityCondition::Not { .. } => ("Not", Handled),
-        // CR 730.2a: Daybound/Nightbound ETB initialization — handled by evaluate_condition.
+        // CR 702.145d + CR 731.1: Daybound/Nightbound ETB initialization — handled by evaluate_condition.
         AbilityCondition::DayNightIsNeither => ("DayNightIsNeither", Handled),
         // CR 731.1: Day/night designation check — handled by evaluate_condition.
         AbilityCondition::DayNightIs { .. } => ("DayNightIs", Handled),

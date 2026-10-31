@@ -28057,7 +28057,7 @@ pub(crate) fn evaluate_condition(
             }
             !evaluate_condition(condition, state, ability)
         }
-        // CR 730.2a: True when it's neither day nor night (no designation set yet).
+        // CR 731.1: True when it's neither day nor night (the game starts with neither designation).
         AbilityCondition::DayNightIsNeither => state.day_night.is_none(),
         // CR 731.1: True when the game has the requested day/night designation.
         AbilityCondition::DayNightIs {
