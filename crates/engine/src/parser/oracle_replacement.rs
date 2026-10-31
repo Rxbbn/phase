@@ -35614,6 +35614,10 @@ mod snapshot_tests {
     /// whole in `PreventDamage.target`, restriction included (Charm Peddler,
     /// Samite Blessing). The bare "to you" scope and an unrestricted clause are the
     /// reach guards proving the same branch still produces its previous shapes.
+    /// The "target creature you control" and "target permanent" rows are not printed
+    /// card shapes in this grammar; they assert that an existing filter (the peek's
+    /// "target permanent" arm, `parse_target_with_ctx`'s "you control") is carried
+    /// whole rather than rebuilt as a bare `Creature`.
     #[test]
     fn chosen_source_prevention_keeps_declared_recipient_restriction() {
         let ctx = ParseContext::default();

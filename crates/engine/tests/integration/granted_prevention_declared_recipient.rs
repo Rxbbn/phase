@@ -15,7 +15,7 @@ use engine::types::ability::{AbilityKind, Effect, StaticDefinition, TargetFilter
 use engine::types::actions::GameAction;
 use engine::types::game_state::WaitingFor;
 use engine::types::identifiers::ObjectId;
-use engine::types::mana::{ManaType, ManaUnit};
+use engine::types::mana::{ManaColor, ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
 
@@ -175,6 +175,7 @@ fn samite_blessing_protects_only_the_announced_creature() {
         .id();
     let protected = scenario.add_creature(P0, "Protected", 0, 9).id();
     let bystander = scenario.add_creature(P0, "Bystander", 0, 9).id();
+    let land = scenario.add_basic_land(P0, ManaColor::White);
     let source = scenario
         .add_creature_from_oracle(P1, "Shivan Hellkite", 5, 5, HELLKITE)
         .id();
@@ -186,7 +187,7 @@ fn samite_blessing_protects_only_the_announced_creature() {
         host,
         protected,
         &[host, protected, bystander, source],
-        &[],
+        &[land],
         source,
     );
 
@@ -217,6 +218,7 @@ fn charm_peddler_announces_any_creature_and_protects_only_it() {
         .id();
     let protected = scenario.add_creature(P0, "Protected", 0, 9).id();
     let bystander = scenario.add_creature(P0, "Bystander", 0, 9).id();
+    let land = scenario.add_basic_land(P0, ManaColor::White);
     let source = scenario
         .add_creature_from_oracle(P1, "Shivan Hellkite", 5, 5, HELLKITE)
         .id();
@@ -229,7 +231,7 @@ fn charm_peddler_announces_any_creature_and_protects_only_it() {
         peddler,
         protected,
         &[peddler, protected, bystander, source],
-        &[],
+        &[land],
         source,
     );
     hellkite_ping(&mut runner, source, bystander);
