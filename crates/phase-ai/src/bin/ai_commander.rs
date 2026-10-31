@@ -167,6 +167,9 @@ enum RunContext {
     Measurement,
 }
 
+/// Error for a missing, blank, or flag-shaped `--watch-cards` value.
+const WATCH_CARDS_REQUIRES: &str = "error: --watch-cards requires a comma-separated card name list";
+
 /// Pure argument parser: consumes the raw process args plus the one
 /// env-derived flag `main` reads once (`measurement_env`, from
 /// `PHASE_AI_MEASUREMENT` -- presence-based, matching `PHASE_DUMP_*`
@@ -187,7 +190,7 @@ fn parse_cli(args: &[String], measurement_env: bool) -> Result<CliArgs, String> 
     let mut difficulty = AiDifficulty::Easy;
     let mut players: u8 = DEFAULT_PLAYERS;
     // Per-seat `--difficulty-pK` overrides (pod-lab gauntlet mixed-skill tables)
-    // as raw `(index suffix, label)` pairs in command-line order. Resolved after
+    // as raw `(flag as typed, label)` pairs in command-line order. Resolved after
     // the loop, once `--players` is known, so an override is validated against the
     // table's seat count whichever flag comes first.
     let mut seat_overrides: Vec<(&str, Option<&str>)> = Vec::new();
@@ -228,19 +231,21 @@ fn parse_cli(args: &[String], measurement_env: bool) -> Result<CliArgs, String> 
             },
             "--watch-cards" => match args_iter.next() {
                 Some(v) => {
-                    watch_cards = v
+                    let names: HashSet<String> = v
                         .split(',')
                         .map(str::trim)
                         .filter(|s| !s.is_empty())
                         .map(str::to_string)
                         .collect();
+                    // Parity with `--watch-card`: an all-blank list or a
+                    // following flag taken as the value is a mistake, not an
+                    // empty set (which would silently switch telemetry off).
+                    if names.is_empty() || v.trim_start().starts_with("--") {
+                        return Err(WATCH_CARDS_REQUIRES.to_string());
+                    }
+                    watch_cards = names;
                 }
-                None => {
-                    return Err(
-                        "error: --watch-cards requires a comma-separated card name list"
-                            .to_string(),
-                    );
-                }
+                None => return Err(WATCH_CARDS_REQUIRES.to_string()),
             },
             "--watch-card" => match args_iter.next() {
                 Some(v) => {
@@ -260,8 +265,8 @@ fn parse_cli(args: &[String], measurement_env: bool) -> Result<CliArgs, String> 
                 // is checked after the loop by `parse_seat_override`, which
                 // hard-fails (like the sibling parsers) instead of silently
                 // dropping a mistyped flag and running a mislabeled seat.
-                if let Some(suffix) = other.strip_prefix("--difficulty-p") {
-                    seat_overrides.push((suffix, args_iter.next().map(String::as_str)));
+                if other.starts_with("--difficulty-p") {
+                    seat_overrides.push((other, args_iter.next().map(String::as_str)));
                 } else if !other.starts_with("--") {
                     // F4: first non-`--`-prefixed token is the positional
                     // `cards_path`. This arm only sees tokens that were NOT
@@ -282,12 +287,9 @@ fn parse_cli(args: &[String], measurement_env: bool) -> Result<CliArgs, String> 
     // `None` means "use the table-wide --difficulty for this seat". Applied in
     // command-line order, so a repeated override of one seat keeps the last.
     let mut seat_difficulty: Vec<Option<AiDifficulty>> = vec![None; usize::from(players)];
-    for (suffix, value) in seat_overrides {
-        let (idx, label) = parse_seat_override(suffix, value, players)?;
-        seat_difficulty[idx] = Some(parse_difficulty_checked(
-            &format!("--difficulty-p{idx}"),
-            label,
-        )?);
+    for (flag, value) in seat_overrides {
+        let (idx, label) = parse_seat_override(flag, value, players)?;
+        seat_difficulty[idx] = Some(parse_difficulty_checked(flag, label)?);
     }
 
     watch_cards.extend(exact_watch_cards);
@@ -1039,7 +1041,8 @@ fn parse_difficulty_checked(flag: &str, s: &str) -> Result<AiDifficulty, String>
 /// Parses a `--seed` value. A non-numeric seed is an `Err`, never a silent
 /// fallback to the default seed (which would run a different game than asked).
 fn parse_seed(s: &str) -> Result<u64, String> {
-    s.parse::<u64>()
+    s.trim()
+        .parse::<u64>()
         .map_err(|_| format!("error: --seed {s:?} must be a non-negative integer"))
 }
 
@@ -1078,8 +1081,8 @@ fn parse_player_count(s: &str) -> Result<u8, String> {
     Ok(players)
 }
 
-/// Resolves a `--difficulty-pK <label>` seat override. `suffix` is the text
-/// after `--difficulty-p`; `value` is the following CLI arg (the label), if
+/// Resolves a `--difficulty-pK <label>` seat override. `flag` is the flag text
+/// exactly as typed (errors echo it, not a normalized index); `value` is the following CLI arg (the label), if
 /// present. Mirrors the hard-fail discipline of `parse_difficulty_checked` /
 /// `parse_action_cap_checked`: a non-numeric or out-of-range (`>= players`) seat index,
 /// or a missing label, is a startup error rather than a silently dropped flag —
@@ -1089,22 +1092,17 @@ fn parse_player_count(s: &str) -> Result<u8, String> {
 /// `DEFAULT_PLAYERS`, so ≥ 2). `parse_cli` calls this after the argument loop
 /// so the check doesn't depend on argument order.
 fn parse_seat_override<'a>(
-    suffix: &str,
+    flag: &str,
     value: Option<&'a str>,
     players: u8,
 ) -> Result<(usize, &'a str), String> {
+    let suffix = flag.strip_prefix("--difficulty-p").unwrap_or(flag);
     let idx = suffix
         .parse::<usize>()
         .ok()
         .filter(|&i| i < usize::from(players))
-        .ok_or_else(|| {
-            format!(
-                "error: --difficulty-p{suffix}: seat index must be 0..={}",
-                players - 1
-            )
-        })?;
-    let label =
-        value.ok_or_else(|| format!("error: --difficulty-p{idx} requires a difficulty label"))?;
+        .ok_or_else(|| format!("error: {flag}: seat index must be 0..={}", players - 1))?;
+    let label = value.ok_or_else(|| format!("error: {flag} requires a difficulty label"))?;
     Ok((idx, label))
 }
 
@@ -1639,30 +1637,36 @@ mod tests {
 
     #[test]
     fn parse_seat_override_rejects_non_numeric_index() {
-        assert!(parse_seat_override("x", Some("Hard"), 4).is_err());
+        assert!(parse_seat_override("--difficulty-px", Some("Hard"), 4).is_err());
     }
 
     #[test]
     fn parse_seat_override_rejects_out_of_range_index() {
-        assert!(parse_seat_override("4", Some("Hard"), 4).is_err());
-        assert!(parse_seat_override("9", Some("Hard"), 4).is_err());
-        assert!(parse_seat_override("5", Some("Hard"), 5).is_err());
+        assert!(parse_seat_override("--difficulty-p4", Some("Hard"), 4).is_err());
+        assert!(parse_seat_override("--difficulty-p9", Some("Hard"), 4).is_err());
+        assert!(parse_seat_override("--difficulty-p5", Some("Hard"), 5).is_err());
     }
 
     #[test]
     fn parse_seat_override_requires_a_label_value() {
-        assert!(parse_seat_override("2", None, 4).is_err());
+        assert!(parse_seat_override("--difficulty-p2", None, 4).is_err());
     }
 
     #[test]
     fn parse_seat_override_accepts_valid_seat_and_label() {
-        assert_eq!(parse_seat_override("2", Some("Hard"), 4), Ok((2, "Hard")));
         assert_eq!(
-            parse_seat_override("0", Some("VeryHard"), 4),
+            parse_seat_override("--difficulty-p2", Some("Hard"), 4),
+            Ok((2, "Hard"))
+        );
+        assert_eq!(
+            parse_seat_override("--difficulty-p0", Some("VeryHard"), 4),
             Ok((0, "VeryHard"))
         );
         // The bound is the table's seat count, not a fixed four.
-        assert_eq!(parse_seat_override("4", Some("Hard"), 5), Ok((4, "Hard")));
+        assert_eq!(
+            parse_seat_override("--difficulty-p4", Some("Hard"), 5),
+            Ok((4, "Hard"))
+        );
     }
 
     #[test]
@@ -2161,6 +2165,9 @@ mod tests {
         assert_eq!(cli.action_cap, 9);
         assert_eq!(cli.feed, "f.json");
         assert_eq!(cli.seat_difficulty[1], Some(AiDifficulty::VeryHard));
+        assert_eq!(parse_cli_args(&["--seed", " 7"]).unwrap().seed, 7);
+        let cli = parse_cli_args(&["--watch-cards", "Sol Ring, ,Arcane Signet"]).unwrap();
+        assert_eq!(cli.watch_cards.len(), 2);
 
         // (args, flag the error must name, flags the error must NOT name)
         let rows: &[(&[&str], &str, &[&str])] = &[
@@ -2171,7 +2178,24 @@ mod tests {
             (&["--difficulty", "Bogus"], "--difficulty", &[]),
             (&["--action-cap"], "--action-cap", &[]),
             (&["--action-cap", "abc"], "--action-cap", &[]),
+            (&["--seed", " 7x"], "--seed", &[]),
             (&["--feed"], "--feed", &[]),
+            (&["--watch-cards"], "--watch-cards", &[]),
+            (&["--watch-cards", ""], "--watch-cards", &[]),
+            (&["--watch-cards", "  "], "--watch-cards", &[]),
+            (&["--watch-cards", ","], "--watch-cards", &[]),
+            // A following flag must not be swallowed as the value.
+            (&["--watch-cards", "--seed", "7"], "--watch-cards", &[]),
+            (
+                &["--difficulty-p01", "Bogus"],
+                "--difficulty-p01",
+                &["--difficulty-p1", "unrecognized --difficulty "],
+            ),
+            (
+                &["--difficulty-p+1"],
+                "--difficulty-p+1",
+                &["--difficulty-p1 "],
+            ),
             (&["--difficulty-p1"], "--difficulty-p1", &[]),
             (
                 &["--difficulty-p1", "Bogus"],
