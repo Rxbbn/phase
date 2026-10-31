@@ -4,8 +4,10 @@
 //! CR 613.1f: layer 6 applies ability-removing effects.
 //! CR 611.2a: neither printed text states a duration, so the continuous effect
 //!            lasts until the end of the game (`Duration::Permanent`).
-//! CR 608.2m: the activated ability that removes itself still finishes
-//!            resolving — the Conjure / the Aura animation and attach all run.
+//! CR 113.7a: the activated ability that removes itself still finishes
+//!            resolving — "once activated or triggered, an ability exists on
+//!            the stack independently of its source", so the Conjure / the Aura
+//!            animation and attach all run.
 //! CR 611.2c: the set of objects a resolution-created continuous effect affects
 //!            is fixed when it begins, so a second copy of the same card that
 //!            did not activate keeps its ability.
@@ -45,12 +47,15 @@
 use crate::support::shared_card_db;
 use engine::ai_support::legal_actions_for_viewer;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
-use engine::types::ability::{ContinuousModification, Duration};
+use engine::types::ability::{
+    AbilityCost, AbilityDefinition, AbilityKind, ContinuousModification, Duration, Effect,
+    GrantedAbilityScope, TargetFilter,
+};
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
 use engine::types::identifiers::ObjectId;
 use engine::types::keywords::Keyword;
-use engine::types::mana::{ManaType, ManaUnit};
+use engine::types::mana::{ManaCost, ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::zones::Zone;
 
@@ -64,6 +69,16 @@ Then this creature loses this ability. Activate only as a sorcery.";
 const CALMING_LICID: &str = "{W}, {T}: This creature loses this ability and becomes an Aura \
 enchantment with enchant creature. Attach it to target creature. You may pay {W} to end this \
 effect.\nEnchanted creature can't attack.";
+
+/// Nurturing Licid's verbatim Oracle text — the one corpus producer that prints
+/// a SECOND activated ability, so its removal renumbers a surviving sibling.
+const NURTURING_LICID: &str = "{G}, {T}: This creature loses this ability and becomes an Aura \
+enchantment with enchant creature. Attach it to target creature. You may pay {G} to end this \
+effect.\n{G}: Regenerate enchanted creature.";
+
+/// A recipient's own printed activated ability, so a printed-slot identity has
+/// something at live index 0 to delete by mistake.
+const PUMPER: &str = "{0}: This creature gets +1/+1 until end of turn.";
 
 fn mana(color: ManaType, count: usize) -> Vec<ManaUnit> {
     (0..count)
@@ -132,6 +147,81 @@ fn chroniclers_board() -> Option<(GameRunner, ObjectId, ObjectId)> {
     Some((runner, activator, bystander))
 }
 
+/// A recipient that has GAINED Calming Licid's activated ability through the
+/// production grant path, plus `own_oracle`'s printed ability of its own.
+///
+/// The donor carries the Licid text and a `{0}:` ability that donates all its
+/// OTHER abilities (`GrantedAbilityScope::AllOther` — Quicksilver Elemental /
+/// Agatha's Soul Cauldron class); that donation is driven through
+/// `runner.activate`, so the gained ability arrives on the recipient the way
+/// `layers.rs`'s `GrantAllActivatedAbilitiesOf` expansion delivers it, carrying
+/// the donor's stamped printed slot verbatim.
+///
+/// Returns the recipient, the live index of its OWN ability (0 when
+/// `own_oracle` is empty, which is then unused), the live index of the GAINED
+/// Licid ability, and a host creature for the Licid's attach target.
+fn gained_licid_board(own_oracle: &str) -> (GameRunner, ObjectId, usize, usize, ObjectId) {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_mana_pool(P0, mana(ManaType::White, 4));
+    let recipient = {
+        let mut builder = scenario.add_creature(P0, "Recipient", 2, 2);
+        if !own_oracle.is_empty() {
+            builder.from_oracle_text(own_oracle);
+        }
+        builder.id()
+    };
+    let donor = scenario
+        .add_creature_from_oracle(P0, "Calming Licid", 1, 1, CALMING_LICID)
+        .with_ability_definition(
+            AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::GainActivatedAbilitiesOfTarget {
+                    target: TargetFilter::SelfRef,
+                    recipient: TargetFilter::SpecificObject { id: recipient },
+                    scope: GrantedAbilityScope::AllOther,
+                    duration: Some(Duration::UntilEndOfTurn),
+                },
+            )
+            .cost(AbilityCost::Mana {
+                cost: ManaCost::generic(0),
+            }),
+        )
+        .id();
+    let host = scenario.add_creature(P1, "Grizzly Bears", 2, 2).id();
+    let mut runner = scenario.build();
+
+    let donate_index = runner.state().objects[&donor]
+        .abilities
+        .iter()
+        .position(|a| {
+            matches!(
+                a.effect.as_ref(),
+                Effect::GainActivatedAbilitiesOfTarget { .. }
+            )
+        })
+        .expect("the synthetic donation ability");
+    runner.activate(donor, donate_index).resolve();
+    runner.advance_until_stack_empty();
+
+    let gained_index = runner.state().objects[&recipient]
+        .abilities
+        .iter()
+        .position(|a| matches!(a.effect.as_ref(), Effect::GenericEffect { .. }))
+        .unwrap_or_else(|| {
+            panic!(
+                "reach: the recipient must have GAINED the Licid ability, got {:?}",
+                runner.state().objects[&recipient].abilities
+            )
+        });
+    let own_index = runner.state().objects[&recipient]
+        .abilities
+        .iter()
+        .position(|a| matches!(a.effect.as_ref(), Effect::Pump { .. }))
+        .unwrap_or(0);
+    (runner, recipient, own_index, gained_index, host)
+}
+
 /// THE DISCRIMINATING TEST. Activating the printed ability conjures, then
 /// removes that ability from the activating permanent only — so a second
 /// activation is no longer offered, while the identical second copy's is.
@@ -159,7 +249,8 @@ fn great_fang_chroniclers_loses_only_its_own_activated_ability() {
         outcome.find_object(|o| o.zone == Zone::Battlefield && o.name == "Muraganda Petroglyphs");
     assert!(
         conjured.is_some(),
-        "CR 608.2m: the ability finishes resolving — the Conjure happened"
+        "CR 113.7a: the ability exists on the stack independently of its source \
+         — the Conjure happened"
     );
     runner.advance_until_stack_empty();
     assert!(battlefield_has_named(&runner, "Muraganda Petroglyphs"));
@@ -287,7 +378,7 @@ fn calming_licid_loses_its_own_ability_when_it_becomes_an_aura() {
         .target_objects(&[host])
         .resolve();
 
-    // Reach-guard: the rest of the clause ran (CR 608.2m) — the Licid is an
+    // Reach-guard: the rest of the clause ran (CR 113.7a) — the Licid is an
     // Aura enchantment now, so the assertion below is not reading an object the
     // effect never touched.
     let animated = &outcome.state().objects[&licid];
@@ -346,5 +437,148 @@ fn calming_licid_loses_its_own_ability_when_it_becomes_an_aura() {
             .core_types
             .contains(&CoreType::Enchantment),
         "reach: the pay-to-end action ended the whole continuous effect"
+    );
+}
+
+/// CR 608.2c + CR 113.10: "this ability" is the ability that RESOLVED, so a
+/// GAINED ability is the one removed — the recipient's own printed ability at
+/// the same live slot number is not touched.
+///
+/// This is the Agatha's Soul Cauldron / Quicksilver Elemental / Experiment Kraj
+/// family at runtime: the donated definition's `RemoveSourceAbility` travels
+/// verbatim with the donor's stamped printed slot (`layers.rs`'s
+/// `GrantAllActivatedAbilitiesOf` expansion re-sources it to the recipient), so
+/// a printed-slot identity would delete `{0}: +1/+1` — the recipient's OWN
+/// first printed ability — permanently, and leave the gained Licid ability
+/// activatable.
+///
+/// Revert probe: identify the removal by `base_abilities[ability_index]` instead
+/// of by the resolution snapshot and the two assertions swap outcomes.
+#[test]
+fn a_gained_loses_this_ability_removes_the_gained_ability_not_the_recipients_own() {
+    let (mut runner, recipient, own_index, gained_index, host) = gained_licid_board(PUMPER);
+    // Reach-guards: both abilities are activatable before anything resolves, so
+    // neither assertion below can pass vacuously.
+    assert!(activation_is_legal(&runner, recipient, own_index));
+    assert!(activation_is_legal(&runner, recipient, gained_index));
+
+    runner
+        .activate(recipient, gained_index)
+        .target_objects(&[host])
+        .resolve();
+    runner.advance_until_stack_empty();
+
+    // CR 113.10: the GAINED ability is gone.
+    assert!(
+        !runner.state().objects[&recipient]
+            .abilities
+            .iter()
+            .any(|a| matches!(a.effect.as_ref(), Effect::GenericEffect { .. })),
+        "the gained Licid ability must be removed, got {:?}",
+        runner.state().objects[&recipient].abilities
+    );
+    // THE LOAD-BEARING ASSERTION: the recipient's OWN printed ability survives,
+    // read off the production legality surface.
+    assert!(
+        activation_is_legal(&runner, recipient, own_index),
+        "the recipient's own printed ability must be untouched — a printed-slot \
+         identity would have deleted it"
+    );
+}
+
+/// CR 609.3 + CR 608.2c: the Necrotic Ooze shape — a recipient whose printed
+/// activated-ability list is EMPTY still loses the gained ability. A
+/// printed-slot identity can only no-op here, leaving the Ooze with an ability
+/// CR 113.10 says it loses.
+///
+/// Revert probe: identify the removal by `base_abilities[ability_index]` and
+/// `base_abilities` is empty, so the assertion below fails.
+#[test]
+fn a_gained_loses_this_ability_works_on_a_recipient_with_no_printed_abilities() {
+    let (mut runner, recipient, _own_index, gained_index, host) = gained_licid_board("");
+    assert!(
+        runner.state().objects[&recipient].base_abilities.is_empty(),
+        "reach: the recipient prints no activated ability at all"
+    );
+    assert!(activation_is_legal(&runner, recipient, gained_index));
+
+    runner
+        .activate(recipient, gained_index)
+        .target_objects(&[host])
+        .resolve();
+    runner.advance_until_stack_empty();
+    assert!(
+        runner.state().objects[&recipient].abilities.is_empty(),
+        "CR 113.10: the gained ability is lost even with no printed track, got {:?}",
+        runner.state().objects[&recipient].abilities
+    );
+}
+
+/// CR 602.5b: Nurturing Licid is the one corpus card whose removal RENUMBERS a
+/// surviving sibling — it prints two activated abilities, and losing slot 0
+/// moves "{G}: Regenerate enchanted creature" from live index 1 to 0, where it
+/// inherits the removed slot's `(ObjectId, ability_index)` tally keys.
+///
+/// The surviving ability must still be activatable at its new index. Regenerate
+/// carries no `ActivationRestriction`, so no CR 602.5b gate reads the inherited
+/// tally; this is the row that would catch it if one ever did.
+#[test]
+fn nurturing_licid_second_ability_survives_the_renumber() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_mana_pool(P0, mana(ManaType::Green, 4));
+    let licid = scenario
+        .add_creature_from_oracle(P0, "Nurturing Licid", 1, 1, NURTURING_LICID)
+        .id();
+    let host = scenario.add_creature(P1, "Grizzly Bears", 2, 2).id();
+    let mut runner = scenario.build();
+
+    assert_eq!(
+        runner.state().objects[&licid].abilities.len(),
+        2,
+        "reach: Nurturing Licid prints TWO activated abilities"
+    );
+    let regenerate_before = runner.state().objects[&licid]
+        .abilities
+        .iter()
+        .position(|a| matches!(a.effect.as_ref(), Effect::Regenerate { .. }))
+        .expect("the printed {G}: Regenerate ability");
+    assert_eq!(
+        regenerate_before, 1,
+        "reach: Regenerate starts at live slot 1"
+    );
+    assert!(activation_is_legal(&runner, licid, regenerate_before));
+
+    let licid_index = runner.state().objects[&licid]
+        .abilities
+        .iter()
+        .position(|a| matches!(a.effect.as_ref(), Effect::GenericEffect { .. }))
+        .expect("the printed {G}, {T} animation ability");
+    runner
+        .activate(licid, licid_index)
+        .target_objects(&[host])
+        .resolve();
+    runner.advance_until_stack_empty();
+
+    let after = &runner.state().objects[&licid];
+    assert_eq!(
+        after.abilities.len(),
+        1,
+        "CR 113.10: the animation ability is gone, got {:?}",
+        after.abilities
+    );
+    let regenerate_after = after
+        .abilities
+        .iter()
+        .position(|a| matches!(a.effect.as_ref(), Effect::Regenerate { .. }))
+        .expect("Regenerate must survive the removal");
+    assert_eq!(
+        regenerate_after, 0,
+        "reach: the surviving ability actually renumbered to slot 0"
+    );
+    assert!(
+        activation_is_legal(&runner, licid, regenerate_after),
+        "CR 602.5b: the renumbered sibling must still be activatable at its new \
+         live index"
     );
 }

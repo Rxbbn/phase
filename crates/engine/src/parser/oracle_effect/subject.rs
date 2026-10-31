@@ -5371,9 +5371,6 @@ fn build_pt_choice_clause(
     })
 }
 
-/// Continuous-clause builder. Unstated durations default to Permanent at four
-/// keyword-driven arms: Suspend, in-addition-to-types, Licid attachable
-/// subtypes, and pure `GrantTrigger` grants (CR 611.2a).
 /// CR 205.1a + CR 612.1: True when the predicate states a type-set EXCLUSION
 /// (`"… instead of a <card type>"`) that `parse_continuous_modifications` does
 /// not perform.
@@ -5385,8 +5382,12 @@ fn build_pt_choice_clause(
 /// Licid — "becomes a creature enchantment that reads \"Enchanted creature gains
 /// flanking\" INSTEAD OF A CREATURE" — lowered to
 /// `SetCardTypes{[Creature, Enchantment]}`, keeping the very type the clause
-/// excludes, and the CR 612.1 text change (the object's rules text is REPLACED
-/// by the quoted line) has no `ContinuousModification` at all.
+/// excludes. Its `that reads "…"` half is a CR 612.1 text-changing effect — "some
+/// continuous effects change an object's text … such an effect is a
+/// text-changing effect" — and the engine has no `ContinuousModification` for
+/// one at all, so that half is unmodelled too. (CR 612.1 only DEFINES the
+/// category; it is cited here for the classification, not for any claim about
+/// what the replacement does.)
 ///
 /// Consumed by exactly one caller: the CR 611.2a `Duration::Permanent`
 /// promotion for a removal clause that states no duration. Withholding the
@@ -5407,6 +5408,16 @@ fn build_pt_choice_clause(
 /// Keyed on the grammatical exclusion — the `instead of a[n]` qualifier plus a
 /// `CoreType` word recognized by the shared animation type vocabulary — never on
 /// any card's sentence. One corpus card reaches it today (Flanking Licid).
+///
+/// # Death condition
+///
+/// This helper and the conjunct it feeds must be DELETED with the gap they
+/// proxy. `flanking_licid_type_exclusion_gap_tripwire`
+/// (`oracle_effect/tests.rs`) asserts the GAP itself — that the lowering still
+/// keeps the excluded type — so it FAILS the moment the
+/// `becomes <type> … instead of a <type>` lowering lands. That failure is the
+/// signal to remove both, and is why this guard cannot outlive its gap
+/// silently.
 fn predicate_states_unmodeled_type_exclusion(predicate: &str) -> bool {
     let lower = predicate.to_ascii_lowercase();
     nom_primitives::scan_at_word_boundaries(lower.as_str(), |input| {
@@ -5425,6 +5436,10 @@ fn predicate_states_unmodeled_type_exclusion(predicate: &str) -> bool {
     .is_some()
 }
 
+/// Continuous-clause builder. Unstated durations default to Permanent at five
+/// keyword-driven arms: Suspend, "loses this ability" (CR 113.10),
+/// in-addition-to-types, Licid attachable subtypes, and pure `GrantTrigger`
+/// grants (CR 611.2a).
 fn build_continuous_clause(
     application: SubjectApplication,
     predicate: &str,

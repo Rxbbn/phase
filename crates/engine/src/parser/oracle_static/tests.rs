@@ -34436,8 +34436,9 @@ fn scan_loss_enumeration_recognizes_land_types() {
 /// same lose-verb head, and lowers to `RemoveSourceAbility` with the printed
 /// slot left unbound for the post-assembly stamp.
 ///
-/// Cards: Great Fang Chroniclers ("…, then this creature loses this ability")
-/// and the thirteen Licids, where it heads the compound predicate.
+/// Cards: the thirteen Licids, where it heads the compound predicate. Great
+/// Fang Chroniclers prints "…, then this creature loses this ability", whose
+/// intra-sentence tail is not yet chunked, so it does not reach this arm.
 #[test]
 fn lose_this_ability_lowers_to_a_single_printed_ability_removal() {
     assert_eq!(
@@ -34447,7 +34448,8 @@ fn lose_this_ability_lowers_to_a_single_printed_ability_removal() {
     assert_eq!(
         parse_continuous_modifications("lose this ability"),
         vec![ContinuousModification::RemoveSourceAbility {
-            ability_index: None
+            ability_index: None,
+            ability: None
         }],
     );
     // Licid shape: the removal heads the compound, the animation follows.
@@ -34456,7 +34458,8 @@ fn lose_this_ability_lowers_to_a_single_printed_ability_removal() {
     );
     assert!(
         licid.contains(&ContinuousModification::RemoveSourceAbility {
-            ability_index: None
+            ability_index: None,
+            ability: None
         }),
         "the removal conjunct must survive the compound, got {licid:?}"
     );

@@ -1427,7 +1427,9 @@ pub(crate) fn parse_continuous_modifications(text: &str) -> Vec<ContinuousModifi
                 modifications.push(ContinuousModification::RemoveAllAbilities);
             }
             // CR 113.10 + CR 602.1: "loses this ability" removes exactly the
-            // printed activated ability the clause belongs to. The printed slot
+            // activated ability the clause belongs to — the thirteen Licids
+            // today; Great Fang Chroniclers' ", then" tail is not yet chunked
+            // and does not reach here. The printed slot
             // is not known here — this parser has no document position — so the
             // index is left unbound and resolved post-assembly by
             // `oracle_ir::doc::stamp_printed_ability_slot`, the same pass
@@ -1435,6 +1437,11 @@ pub(crate) fn parse_continuous_modifications(text: &str) -> Vec<ContinuousModifi
             LossMember::ThisAbility => {
                 modifications.push(ContinuousModification::RemoveSourceAbility {
                     ability_index: None,
+                    // CR 608.2c: the resolution-time identity of "this ability"
+                    // is not knowable here; `effects/effect.rs::
+                    // snapshot_transient_modifications` stamps it when the
+                    // ability resolves.
+                    ability: None,
                 });
             }
             LossMember::CreatureTypes => {

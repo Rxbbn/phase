@@ -31433,7 +31433,8 @@ fn calming_licid_loses_this_ability_is_a_stamped_single_ability_removal() {
     assert_eq!(
         static_def.modifications.first(),
         Some(&ContinuousModification::RemoveSourceAbility {
-            ability_index: Some(0)
+            ability_index: Some(0),
+            ability: None
         }),
         "the removal must lead the modification list, stamped with this \
          ability's printed slot, got {:?}",
@@ -31551,24 +31552,93 @@ fn flanking_licid_type_exclusion_is_not_promoted_to_permanent() {
         "a half-modelled clause keeps its pre-existing duration"
     );
 
-    // Paired positive: the exclusion-free Aura Licids ARE promoted, so the guard
-    // is narrow rather than a blanket opt-out.
-    let aura = crate::parser::oracle::parse_oracle_text(
-        "{W}, {T}: This creature loses this ability and becomes an Aura enchantment \
-         with enchant creature. Attach it to target creature. You may pay {W} to \
-         end this effect.",
-        "Calming Licid",
+    // Paired positive, on a modification set with NO attachable subtype: the
+    // Great Fang Chroniclers tail lowers to a lone `RemoveSourceAbility`, so the
+    // `Permanent` below can only come from the CR 113.10 removal arm. (A Licid
+    // would be satisfied by the pre-existing animate-then-attach promotion
+    // instead, and would not guard this arm at all.)
+    let chroniclers = crate::parser::oracle::parse_oracle_text(
+        "{3}{G}: Conjure a card named Muraganda Petroglyphs onto the battlefield. \
+         Then this creature loses this ability. Activate only as a sorcery.",
+        "Great Fang Chroniclers",
         &[],
         &["Creature".to_string()],
         &[],
     );
-    let Effect::GenericEffect { duration, .. } = aura.abilities[0].effect.as_ref() else {
-        panic!("expected the Aura animation GenericEffect");
+    let tail = chroniclers.abilities[0]
+        .sub_ability
+        .as_ref()
+        .expect("the removal tail");
+    let Effect::GenericEffect {
+        static_abilities,
+        duration,
+        ..
+    } = tail.effect.as_ref()
+    else {
+        panic!("expected the removal GenericEffect, got {:?}", tail.effect);
     };
+    assert_eq!(
+        static_abilities[0].modifications.len(),
+        1,
+        "reach: the clause carries ONLY the removal, so no other promotion arm \
+         can be the one under test, got {:?}",
+        static_abilities[0].modifications
+    );
     assert_eq!(
         *duration,
         Some(Duration::Permanent),
-        "CR 611.2a: the fully-modelled removal clause is still promoted"
+        "CR 611.2a: a fully-modelled removal clause stating no duration is promoted"
+    );
+}
+
+/// TRIPWIRE — delete this test together with
+/// `subject::predicate_states_unmodeled_type_exclusion` and the duration
+/// conjunct it feeds.
+///
+/// It asserts the GAP, not the behaviour: Flanking Licid's clause still lowers
+/// to `SetCardTypes{[Creature, Enchantment]}`, keeping the very Creature type
+/// "instead of a creature" removes (CR 205.1a), and the CR 612.1 text change
+/// still has no modification. The moment that lowering is fixed this test FAILS,
+/// which is the signal that the guard withholding `Duration::Permanent` from
+/// this clause has nothing left to catch and must be removed with it.
+///
+/// Without this row the guard would outlive its gap silently, withholding
+/// permanence from a clause that had become correct.
+#[test]
+fn flanking_licid_type_exclusion_gap_tripwire() {
+    let parsed = crate::parser::oracle::parse_oracle_text(
+        "{R}, {T}: Flanking Licid loses this ability and becomes a creature \
+         enchantment that reads \"Enchanted creature gains flanking\" instead of a \
+         creature. Move Flanking Licid onto target creature. You may pay {R} to \
+         end this effect.",
+        "Flanking Licid",
+        &[],
+        &["Creature".to_string()],
+        &[],
+    );
+    let Effect::GenericEffect {
+        static_abilities, ..
+    } = parsed.abilities[0].effect.as_ref()
+    else {
+        panic!(
+            "expected the animation GenericEffect, got {:?}",
+            parsed.abilities[0].effect
+        );
+    };
+    let kept_creature = static_abilities[0].modifications.iter().any(|m| {
+        matches!(
+            m,
+            ContinuousModification::SetCardTypes { core_types }
+                if core_types.contains(&crate::types::card_type::CoreType::Creature)
+        )
+    });
+    assert!(
+        kept_creature,
+        "GAP TRIPWIRE: the lowering no longer keeps the excluded Creature type, \
+         so the `instead of a <type>` exclusion is now modelled — delete \
+         `predicate_states_unmodeled_type_exclusion`, its duration conjunct, and \
+         this test. Modifications: {:?}",
+        static_abilities[0].modifications
     );
 }
 

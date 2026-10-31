@@ -12294,12 +12294,27 @@ fn apply_continuous_effect_filtered(
                 obj.keywords.clear();
                 abilities_suppressed.insert(id);
             }
-            // CR 113.10 + CR 613.1f: Layer 6 removal of ONE named printed
-            // activated ability. CR 113.10 is the authorizing rule — "an effect
-            // that removes an ability will state that the object 'loses' that
+            // CR 113.10 + CR 613.1f: Layer 6 removal of ONE named activated
+            // ability. CR 113.10 is the authorizing rule — "an effect that
+            // removes an ability will state that the object 'loses' that
             // ability" — and CR 613.1f is the layer it applies in. Written by
-            // "<object> loses this ability" (Great Fang Chroniclers; the
-            // thirteen Licids).
+            // "<object> loses this ability" (the thirteen Licids; Great Fang
+            // Chroniclers once its ", then" tail is chunked).
+            //
+            // CR 608.2c: the identity is the ability that actually RESOLVED,
+            // snapshotted into the modification at install time by
+            // `effects/effect.rs::snapshot_transient_modifications`. This arm
+            // therefore compares STRUCTURALLY and reads no index: a printed slot
+            // number cannot name a GAINED ability (Agatha's Soul Cauldron
+            // donating a Licid's ability to another creature, Necrotic Ooze,
+            // Experiment Kraj, Myr Welder …), where the live slot it occupies
+            // belongs to the recipient's own printed list. See the variant doc.
+            //
+            // CR 609.3 — "if an effect attempts to do something impossible, it
+            // does only as much as possible" — is the fail-closed state for a
+            // modification that never reached that snapshot: a printed
+            // `StaticDefinition` carrying it (gathered by `def_index`), a
+            // card-data value, or an unstamped clause. All resolve to nothing.
             //
             // Deliberately surgical where `RemoveAllAbilities` above is total:
             // `trigger_definitions`, `static_definitions`,
@@ -12313,21 +12328,12 @@ fn apply_continuous_effect_filtered(
             //
             // CR 113.10b ("effects that remove an ability remove all instances
             // of it") is why this `retain`s rather than removing one position.
-            // Every grant path already dedups structurally, so "all instances"
-            // and "the one instance" coincide on today's corpus; writing the
-            // rule means a later identical grant with an EARLIER timestamp than
-            // this removal is also stripped, while one with a LATER timestamp
-            // re-adds it (CR 613.7 timestamp order) — the same ordering
-            // `RemoveAllAbilities` gets.
-            //
-            // The printed ability is read from the affected object's own
-            // `base_abilities` — the stable printed track the layer reset
-            // reseeds `abilities` from every pass, so the removal is idempotent
-            // across passes — and matched structurally against the live list
-            // rather than removed by raw index. A layer-1 copy effect that
-            // replaced the characteristic ability set therefore finds no match
-            // and removes nothing (CR 609.3: an effect does only as much as it
-            // can), instead of stripping whatever now sits at that index.
+            // A later identical grant with an EARLIER timestamp than this
+            // removal is also stripped, while one with a LATER timestamp re-adds
+            // it (CR 613.7 timestamp order) — the same ordering
+            // `RemoveAllAbilities` gets. The removal is idempotent across layer
+            // passes: the pass reseeds `abilities` from the printed/copied set
+            // and reapplies this effect against the same snapshot.
             //
             // KNOWN BOUND, and it IS reachable. Removing a slot shifts every
             // later live slot down one, and FOUR maps are keyed
@@ -12341,38 +12347,45 @@ fn apply_continuous_effect_filtered(
             // …" and "{G}: Regenerate enchanted creature" — so its Regenerate
             // shifts from live index 1 to 0 and inherits the removed slot's
             // keys. No read can answer wrongly for it today, each for its own
-            // reason: the two activation tallies are read only inside
-            // `restrictions.rs`'s `OnlyOnceEachTurn` / `OnlyOnce` /
-            // `MaxTimesEachTurn` arms and Regenerate carries no
-            // `ActivationRestriction`; `ability_resolutions_this_turn` is read
-            // only when the resolving ability's own `AbilityCondition` is
-            // `AbilityUseCountThisTurn` and Regenerate carries no condition;
-            // `pending_activations` is cleared on `PassPriority`, which
-            // necessarily precedes the resolution that installs this removal, so
-            // it cannot hold the removed slot's key when the shift happens; and
-            // `analysis/resource.rs`'s loop projection RETAINS only keys whose
-            // LIVE ability carries a gate, so it drops the stale entry instead
-            // of misreading it. An ability that DID carry a per-turn restriction
-            // after the removed slot would alias — the same exposure
-            // `RemoveAllAbilities` and a layer-1 wholesale ability replacement
-            // already carry, since all three renumber live slots.
-            ContinuousModification::RemoveSourceAbility { ability_index } => {
-                // CR 113.10 + CR 602.1: the stamped index is a printed slot of
-                // the ABILITY'S OWN SOURCE (`oracle_ir::doc` resolves it from
-                // that ability's document position), so it can only name an
-                // ability of that object. An effect whose affected set reaches
-                // any OTHER object ("enchanted creature loses this ability")
-                // would otherwise strip an unrelated permanent's slot-N ability.
-                // No corpus card produces that shape; the gate keeps it closed.
+            // reason, and `nurturing_licid_second_ability_survives_the_renumber`
+            // in `tests/integration/loses_this_ability_removal.rs` drives it:
+            //
+            // * The two activation tallies are consulted for a LEGALITY verdict
+            //   only inside `restrictions.rs`'s `OnlyOnceEachTurn` / `OnlyOnce` /
+            //   `MaxTimesEachTurn` arms, and Regenerate carries no
+            //   `ActivationRestriction`. The other three readers do not gate
+            //   legality: `ai_support/filter.rs` folds the counts into a memo
+            //   CACHE KEY (key material cannot change a verdict that never reads
+            //   the tally), and `phase-ai/src/search.rs` plus
+            //   `phase-ai/src/reach/sources.rs` apply the AI's own
+            //   `MAX_ACTIVATIONS_PER_SOURCE_PER_TURN` pathology cap, documented
+            //   on `pending_activations` as "not a rules concern".
+            // * `ability_resolutions_this_turn` is read only when the resolving
+            //   ability's own `AbilityCondition` is `AbilityUseCountThisTurn`,
+            //   and Regenerate carries no condition.
+            // * `pending_activations` is cleared on `PassPriority`, which
+            //   necessarily precedes the resolution that installs this removal,
+            //   so it cannot hold the removed slot's key when the shift happens.
+            // * `analysis/resource.rs`'s loop projection RETAINS only keys whose
+            //   LIVE ability carries a gate, so it drops the stale entry instead
+            //   of misreading it.
+            //
+            // An ability that DID carry a per-turn restriction after the removed
+            // slot would alias — the same exposure `RemoveAllAbilities` and a
+            // layer-1 wholesale ability replacement already carry, since all
+            // three renumber live slots.
+            ContinuousModification::RemoveSourceAbility { ability, .. } => {
+                // CR 608.2c + CR 113.10: the snapshot is the ability of THIS
+                // effect's own source, so only that object can lose it. An
+                // effect whose affected set reaches any other object
+                // ("enchanted creature loses this ability") would otherwise
+                // strip a structurally-equal ability off an unrelated
+                // permanent. No corpus card produces that shape; the gate keeps
+                // it closed.
                 if id != effect.source_id {
                     continue;
                 }
-                // CR 609.3: an unstamped removal (no printed activated-ability
-                // slot — see the variant doc) does nothing.
-                if let Some(printed) = ability_index
-                    .and_then(|index| obj.base_abilities.get(index))
-                    .cloned()
-                {
+                if let Some(resolved) = ability.as_deref() {
                     // Counted before the retain, over the characteristic prefix
                     // only: CR 613.1f appends layer-6 grants after
                     // `granted_abilities_from`, so only instances in front of
@@ -12383,12 +12396,12 @@ fn apply_continuous_effect_filtered(
                             obj.abilities
                                 .iter()
                                 .take(from)
-                                .filter(|ability| **ability == printed)
+                                .filter(|candidate| *candidate == resolved)
                                 .count()
                         })
                         .unwrap_or(0);
                     // CR 113.10b: remove ALL instances of the ability.
-                    Arc::make_mut(&mut obj.abilities).retain(|ability| *ability != printed);
+                    Arc::make_mut(&mut obj.abilities).retain(|candidate| candidate != resolved);
                     // CR 613.1f: the characteristic/granted boundary is an index
                     // into the same live vector, so it shifts down by the number
                     // of characteristic slots removed in front of it.
@@ -15638,6 +15651,18 @@ mod tests {
         assert_eq!(obj.activated_ability_provenance(0), own);
     }
 
+    /// CR 608.2c: the removal as `effects/effect.rs::
+    /// snapshot_transient_modifications` builds it — the resolution-time
+    /// snapshot of the ability that resolved, which is the only identity the
+    /// layer arm reads. `ability_index` rides along as the parse-time/card-data
+    /// representation and is deliberately NOT what the arm consults.
+    fn removal_of(resolved: AbilityDefinition) -> ContinuousModification {
+        ContinuousModification::RemoveSourceAbility {
+            ability_index: Some(0),
+            ability: Some(Box::new(resolved)),
+        }
+    }
+
     /// CR 613.1f + CR 611.2c: `RemoveSourceAbility` strips exactly the named
     /// printed slot and nothing else — the sibling printed ability, the
     /// keywords, the granted tail and the OTHER object all survive — and the
@@ -15674,13 +15699,7 @@ mod tests {
                 definition: Box::new(draw_ability(9)),
             },
         );
-        install_until_end_of_turn(
-            &mut state,
-            host,
-            ContinuousModification::RemoveSourceAbility {
-                ability_index: Some(0),
-            },
-        );
+        install_until_end_of_turn(&mut state, host, removal_of(draw_ability(1)));
         relayer(&mut state);
 
         let obj = &state.objects[&host];
@@ -15720,28 +15739,13 @@ mod tests {
         );
     }
 
-    /// CR 609.3: an UNSTAMPED removal (no printed activated-ability slot — a
-    /// triggered ability's "this ability", which lives in
-    /// `base_trigger_definitions`) removes nothing rather than stripping slot 0.
+    /// CR 609.3: a removal that never reached the resolution snapshot — a
+    /// printed static carrying the modification, a card-data value, or a
+    /// triggered ability's "this ability" (which lives in
+    /// `base_trigger_definitions`, CR 603.1, and leaves `ability_index` unbound)
+    /// — removes nothing rather than stripping a slot by number.
     #[test]
-    fn remove_source_ability_without_a_printed_slot_is_a_no_op() {
-        let mut state = setup();
-        let host =
-            creature_with_abilities(&mut state, "Host", vec![draw_ability(1), draw_ability(2)]);
-        install_until_end_of_turn(
-            &mut state,
-            host,
-            ContinuousModification::RemoveSourceAbility {
-                ability_index: None,
-            },
-        );
-        relayer(&mut state);
-        assert_eq!(
-            state.objects[&host].abilities.as_slice(),
-            &[draw_ability(1), draw_ability(2)],
-        );
-        // Paired positive: the SAME fixture with the slot bound does remove it,
-        // so the negative above is not vacuous.
+    fn remove_source_ability_without_a_resolution_snapshot_is_a_no_op() {
         let mut state = setup();
         let host =
             creature_with_abilities(&mut state, "Host", vec![draw_ability(1), draw_ability(2)]);
@@ -15750,8 +15754,21 @@ mod tests {
             host,
             ContinuousModification::RemoveSourceAbility {
                 ability_index: Some(0),
+                ability: None,
             },
         );
+        relayer(&mut state);
+        assert_eq!(
+            state.objects[&host].abilities.as_slice(),
+            &[draw_ability(1), draw_ability(2)],
+            "a stamped printed index alone must not remove anything"
+        );
+        // Paired positive: the SAME fixture carrying the snapshot does remove,
+        // so the negative above is not vacuous.
+        let mut state = setup();
+        let host =
+            creature_with_abilities(&mut state, "Host", vec![draw_ability(1), draw_ability(2)]);
+        install_until_end_of_turn(&mut state, host, removal_of(draw_ability(1)));
         relayer(&mut state);
         assert_eq!(
             state.objects[&host].abilities.as_slice(),
@@ -15759,53 +15776,59 @@ mod tests {
         );
     }
 
-    /// CR 609.3: an index past the printed list (a copy effect left a shorter
-    /// ability set, or a stale index) removes nothing.
+    /// CR 609.3: a snapshot the object no longer carries removes nothing. This
+    /// is the layer-1 copy case — a copy effect replaced the characteristic
+    /// ability set, so the ability the resolution named is not there any more —
+    /// and it is why the arm matches STRUCTURALLY instead of by slot number.
     ///
-    /// Paired with the in-range positive on the SAME fixture, so deleting the
+    /// Paired with the matching positive on the SAME fixture, so deleting the
     /// whole apply arm fails this test instead of leaving it green.
     #[test]
-    fn remove_source_ability_with_an_out_of_range_slot_is_a_no_op() {
+    fn remove_source_ability_with_an_unmatched_snapshot_is_a_no_op() {
         let mut state = setup();
         let host = creature_with_abilities(&mut state, "Host", vec![draw_ability(1)]);
+        let donor =
+            creature_with_abilities(&mut state, "Donor", vec![draw_ability(3), draw_ability(4)]);
+        let donor_values =
+            crate::game::printed_cards::intrinsic_copiable_values(&state.objects[&donor]);
+        // Layer 1 replaces the host's ability set wholesale; the removal's
+        // snapshot (the host's own printed ability) is no longer present.
         install_until_end_of_turn(
             &mut state,
             host,
-            ContinuousModification::RemoveSourceAbility {
-                ability_index: Some(7),
+            ContinuousModification::CopyValues {
+                values: Box::new(donor_values),
+                display: Default::default(),
             },
         );
+        install_until_end_of_turn(&mut state, host, removal_of(draw_ability(1)));
         relayer(&mut state);
         assert_eq!(
             state.objects[&host].abilities.as_slice(),
-            &[draw_ability(1)]
+            &[draw_ability(3), draw_ability(4)],
+            "reach: the copy applied, and the unmatched removal took nothing \
+             from the copied set"
         );
 
-        // Paired positive: the same fixture with an IN-RANGE slot does remove.
+        // Paired positive: the same fixture whose snapshot IS present loses it.
         let mut state = setup();
         let host = creature_with_abilities(&mut state, "Host", vec![draw_ability(1)]);
-        install_until_end_of_turn(
-            &mut state,
-            host,
-            ContinuousModification::RemoveSourceAbility {
-                ability_index: Some(0),
-            },
-        );
+        install_until_end_of_turn(&mut state, host, removal_of(draw_ability(1)));
         relayer(&mut state);
         assert!(
             state.objects[&host].abilities.is_empty(),
-            "reach: the fixture's removal machinery is live, so the \
-             out-of-range negative above is not vacuous"
+            "reach: the fixture's removal machinery is live, so the unmatched \
+             negative above is not vacuous"
         );
     }
 
-    /// CR 113.10 + CR 602.1: the stamped index is a printed slot of the
-    /// ability's OWN SOURCE, so an effect whose affected set reaches a
-    /// DIFFERENT object removes nothing there — it must not strip whatever that
-    /// object happens to print at the same index.
+    /// CR 608.2c + CR 113.10: the snapshot is the ability of the effect's OWN
+    /// source, so an effect whose affected set reaches a DIFFERENT object
+    /// removes nothing there — even when that object carries a structurally
+    /// identical ability.
     ///
     /// Revert probe: delete the `id != effect.source_id` guard in the apply arm
-    /// and the bystander loses its slot-0 ability.
+    /// and the bystander loses its matching ability.
     #[test]
     fn remove_source_ability_refuses_an_affected_object_that_is_not_its_source() {
         let mut state = setup();
@@ -15821,15 +15844,13 @@ mod tests {
                 PlayerId(0),
                 Duration::UntilEndOfTurn,
                 TargetFilter::SpecificObject { id: bystander },
-                vec![ContinuousModification::RemoveSourceAbility {
-                    ability_index: Some(0),
-                }],
+                vec![removal_of(draw_ability(1))],
                 None,
             )
             .expect("the fixture's duration begins");
         relayer(&mut state);
-        // The bystander prints a structurally IDENTICAL slot-0 ability, so a
-        // missing gate would strip it even through the structural match.
+        // The bystander carries a structurally IDENTICAL ability, so a missing
+        // gate would strip it through the structural match.
         assert_eq!(
             state.objects[&bystander].abilities.as_slice(),
             &[draw_ability(1), draw_ability(2)],
@@ -15841,16 +15862,10 @@ mod tests {
             "and the source keeps its own: the effect never affected it"
         );
 
-        // Paired positive: the SAME source and index, affected set = the source.
+        // Paired positive: the SAME snapshot with the affected set = the source.
         let mut state = setup();
         let source = creature_with_abilities(&mut state, "Source", vec![draw_ability(1)]);
-        install_until_end_of_turn(
-            &mut state,
-            source,
-            ContinuousModification::RemoveSourceAbility {
-                ability_index: Some(0),
-            },
-        );
+        install_until_end_of_turn(&mut state, source, removal_of(draw_ability(1)));
         relayer(&mut state);
         assert!(
             state.objects[&source].abilities.is_empty(),
@@ -15859,7 +15874,7 @@ mod tests {
     }
 
     /// CR 113.10b: "Effects that remove an ability remove all instances of it."
-    /// An object printing the same activated ability twice loses both.
+    /// An object carrying the same activated ability twice loses both.
     ///
     /// Revert probe: swap the `retain` back to a single `position`/`remove` and
     /// the second instance survives.
@@ -15871,18 +15886,74 @@ mod tests {
             "Host",
             vec![draw_ability(1), draw_ability(1), draw_ability(2)],
         );
-        install_until_end_of_turn(
-            &mut state,
-            host,
-            ContinuousModification::RemoveSourceAbility {
-                ability_index: Some(0),
-            },
-        );
+        install_until_end_of_turn(&mut state, host, removal_of(draw_ability(1)));
         relayer(&mut state);
         assert_eq!(
             state.objects[&host].abilities.as_slice(),
             &[draw_ability(2)],
             "CR 113.10b: both instances of the named ability go, the other stays"
+        );
+    }
+
+    /// CR 608.2c: the identity is the ability that RESOLVED, not a printed slot
+    /// number — so a GAINED ability is removed and the recipient's own printed
+    /// ability at the same live index is not.
+    ///
+    /// This is the Agatha's Soul Cauldron / Necrotic Ooze / Experiment Kraj
+    /// shape at the layer level: the donated definition occupies live slot 1
+    /// here while the recipient's own printed ability sits at slot 0, and the
+    /// snapshot names the donated one.
+    ///
+    /// Revert probe: identify the removal by `base_abilities[ability_index]`
+    /// (the pre-fix design) and this deletes `draw_ability(1)` — the
+    /// recipient's own ability — while leaving the gained one in place.
+    #[test]
+    fn remove_source_ability_names_a_gained_ability_not_a_printed_slot() {
+        let mut state = setup();
+        let recipient = creature_with_abilities(&mut state, "Recipient", vec![draw_ability(1)]);
+        install_until_end_of_turn(
+            &mut state,
+            recipient,
+            ContinuousModification::GrantAbility {
+                definition: Box::new(draw_ability(7)),
+            },
+        );
+        // `ability_index: Some(0)` is the donor's printed slot and rides along
+        // verbatim with a donated ability; the snapshot is what must decide.
+        install_until_end_of_turn(&mut state, recipient, removal_of(draw_ability(7)));
+        relayer(&mut state);
+        assert_eq!(
+            state.objects[&recipient].abilities.as_slice(),
+            &[draw_ability(1)],
+            "the GAINED ability is removed and the recipient's own survives"
+        );
+    }
+
+    /// CR 609.3 + CR 608.2c: an object with an EMPTY printed list still loses a
+    /// gained ability — the Necrotic Ooze shape, where every activated ability
+    /// comes from elsewhere and a printed-slot identity could only no-op.
+    #[test]
+    fn remove_source_ability_works_with_an_empty_printed_ability_list() {
+        let mut state = setup();
+        let ooze = creature_with_abilities(&mut state, "Ooze", vec![]);
+        install_until_end_of_turn(
+            &mut state,
+            ooze,
+            ContinuousModification::GrantAbility {
+                definition: Box::new(draw_ability(5)),
+            },
+        );
+        relayer(&mut state);
+        assert_eq!(
+            state.objects[&ooze].abilities.as_slice(),
+            &[draw_ability(5)],
+            "reach: the grant is the object's only ability"
+        );
+        install_until_end_of_turn(&mut state, ooze, removal_of(draw_ability(5)));
+        relayer(&mut state);
+        assert!(
+            state.objects[&ooze].abilities.is_empty(),
+            "CR 113.10: the gained ability is lost even with no printed track"
         );
     }
 

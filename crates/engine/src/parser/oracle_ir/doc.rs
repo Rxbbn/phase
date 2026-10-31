@@ -1140,7 +1140,7 @@ fn stamp_retained_mods(mods: &mut [ContinuousModification], slot: usize, kind: P
             ) => *source_ability_index = slot,
             (
                 PrintedItemKind::Ability,
-                ContinuousModification::RemoveSourceAbility { ability_index },
+                ContinuousModification::RemoveSourceAbility { ability_index, .. },
             ) => *ability_index = Some(slot),
             _ => {}
         }
