@@ -5293,6 +5293,9 @@ fn create_entry_copy_spec_for_replacement(
         // Forwards BecomeCopy mods, but no BecomeCopy+halving card exists, so the
         // None fallback (today's token-id read) preserves behavior on this route.
         donor: None,
+        // CR 707.8a governs tokens that are copies; this entry-copy is a card
+        // entering as a copy (CR 614.12), which copies only the face that is up.
+        double_faced: None,
     })
 }
 
