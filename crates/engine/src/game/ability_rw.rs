@@ -3284,7 +3284,9 @@ fn legacy_effect(x: &Effect) -> bool {
         // the per-kind magnitude is a plain enum with no batch-prompt semantics.
         | Effect::ReproduceEventCounters { target, .. } => legacy_target_filter(target),
 
-        Effect::PutOnTopOrBottom { target, chooser } => {
+        Effect::PutOnTopOrBottom {
+            target, chooser, ..
+        } => {
             legacy_target_filter(target) || legacy_target_filter(chooser)
         }
 

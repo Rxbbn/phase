@@ -1646,6 +1646,7 @@ mod tracked_set_anaphor_quantity_binds;
 mod treasure_map_landmark_transform;
 mod treasured_find_regression;
 mod trespassers_curse_enchanted_player_trigger;
+mod tricksters_stratagem_second_from_top;
 mod trk_compound_short_names;
 mod true_conviction_double_keyword_grant;
 mod trusted_precast_restore_characterization;

@@ -6325,6 +6325,7 @@ mod tests {
         state.waiting_for = WaitingFor::TopOrBottomChoice {
             player: PlayerId(0),
             object_id,
+            top_position: Default::default(),
         };
         bind_interaction_authority(&mut state, InteractionSessionId("generic-path".to_string()))
             .expect("valid interaction authority binding");
@@ -6801,6 +6802,7 @@ mod tests {
         state.waiting_for = WaitingFor::TopOrBottomChoice {
             player: PlayerId(0),
             object_id,
+            top_position: Default::default(),
         };
 
         let prepared = prepare_snapshot_with_prompt_id(&state, PlayerId(0), "game-a", 42).unwrap();
