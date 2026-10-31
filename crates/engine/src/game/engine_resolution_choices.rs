@@ -7141,7 +7141,14 @@ pub(super) fn handle_resolution_choice(
                             // DOWN with the specified characteristics instead of
                             // resuming face up and exposing the real object.
                             face_down_profile: face_down_profile.clone(),
-                            library_placement: None,
+                            // CR 701.24a + CR 701.24c: a chain whose terminal
+                            // owner-library `Shuffle` is parked as the continuation
+                            // owns the single randomization; the chosen member defers
+                            // its own shuffle to it.
+                            library_placement:
+                                effects::change_zone::terminal_shuffle_resume_placement(
+                                    state, dest_zone,
+                                ),
                             enter_attached_to: None,
                         };
                         let anticipated_pause =

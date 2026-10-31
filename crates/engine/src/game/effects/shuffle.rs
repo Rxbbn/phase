@@ -4,6 +4,7 @@ use crate::types::ability::{
 use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
 use crate::types::game_state::RandomDraw;
+use crate::types::player::PlayerId;
 
 /// CR 701.24a: Shuffle — randomize the cards in a library.
 pub fn resolve(
@@ -11,6 +12,13 @@ pub fn resolve(
     ability: &ResolvedAbility,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
+    // CR 701.24c-e + CR 400.3: the terminal shuffle of a "move into owners'
+    // libraries, then shuffle" instruction shuffles the library of every owner of
+    // the moved population, once each — the move itself deferred its shuffle to it.
+    if super::is_self_iterating_owner_library_shuffle(ability) {
+        return resolve_owner_population(state, ability, events);
+    }
+
     // CR 608.2c + CR 115.1: Resolve the shuffle's acting player. The filter is
     // the source of truth for *which* player. Mirror Draw/Mill/Discard:
     // context-ref filters (Controller, etc.) MUST NOT consult `ability.targets`
@@ -86,6 +94,39 @@ pub fn resolve(
         },
     };
 
+    shuffle_player(state, ability, target_player, events)
+}
+
+/// CR 701.24c-e + CR 400.3: Shuffle the library of each owner in the exact
+/// prospective subject population the preceding move published, in APNAP order,
+/// once each. Honors `PlayerFilter` scope semantics through the same member
+/// authority the chain executor's fan-out uses.
+fn resolve_owner_population(
+    state: &mut GameState,
+    ability: &ResolvedAbility,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), EffectError> {
+    let Some(scope) = ability.player_scope.as_ref() else {
+        return Ok(());
+    };
+    let apnap = crate::game::players::apnap_order_from(
+        state,
+        ability.starting_with.clone(),
+        ability.controller,
+    );
+    for owner in super::player_scope_members(state, scope, ability, apnap) {
+        shuffle_player(state, ability, owner, events)?;
+    }
+    Ok(())
+}
+
+/// CR 701.24a: Shuffle one player's library, honoring "can't shuffle".
+fn shuffle_player(
+    state: &mut GameState,
+    ability: &ResolvedAbility,
+    target_player: PlayerId,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), EffectError> {
     // CR 701.24a: the target player must exist before any shuffle logic runs.
     // Validate first, unconditionally, so an unknown player is rejected even
     // when a broad "Can't shuffle" static would otherwise suppress the shuffle.

@@ -8552,14 +8552,14 @@ fn parse_graveyard_redirect_replacement(
         // dropping it is what this change exists to stop — fail closed instead.
         Outcome::ShuffleBack { .. } if consequent.is_some() => return None,
         Outcome::ShuffleBack { reveal } => {
-            // CR 701.24: shuffle into owner's library. CR 400.3 is the owner-routing
-            // authority — TargetFilter::Owner resolves to state.objects[source_id].owner,
-            // correct under Mind Control / Threads of Disloyalty when control ≠ ownership.
-            let shuffle = AbilityDefinition::new(
-                AbilityKind::Spell,
-                Effect::Shuffle {
-                    target: TargetFilter::Owner,
-                },
+            // CR 701.24a + CR 701.24c: "shuffle it into its owner's library" is one
+            // shuffle instruction — the redirect moves the object and this terminal
+            // shuffle owns the single randomization. CR 400.3 is the owner-routing
+            // authority: the shuffle is scoped to the owner of the redirected
+            // object, correct under Mind Control / Threads of Disloyalty when
+            // control ≠ ownership.
+            let shuffle = super::oracle_effect::imperative::owner_library_terminal_shuffle(
+                TargetFilter::Owner,
             );
             let post = if reveal {
                 // CR 701.20: reveal the affected object before shuffling.
@@ -20056,6 +20056,22 @@ mod tests {
                     target: TargetFilter::Owner
                 }
             ));
+            // CR 701.24a + CR 701.24c: the redirect moves the card and this terminal
+            // shuffle is the instruction's single randomization — it carries the
+            // owner-library scope, which makes the redirect defer its own shuffle.
+            assert!(
+                matches!(
+                    shuffle.player_scope,
+                    Some(PlayerFilter::TrackedSetPossessor {
+                        caused_by: Some(
+                            crate::types::ability::ThisWayCause::OwnerLibraryShuffleSubject
+                        ),
+                        ..
+                    })
+                ),
+                "{card}: terminal shuffle must carry the owner-library scope, got {:?}",
+                shuffle.player_scope
+            );
         }
     }
 

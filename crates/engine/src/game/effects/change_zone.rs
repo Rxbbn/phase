@@ -596,6 +596,73 @@ fn append_effect_resolved_after_counter_pause(
     );
 }
 
+/// CR 701.24a + CR 701.24c: A move into a library whose chain carries the
+/// terminal owner-library `Shuffle` (see `is_owner_library_shuffle_scope`) is the
+/// move component of ONE shuffle instruction. The zone-delivery tail's
+/// per-object auto-shuffle convention would randomize the same library a second
+/// time (CR 701.24f: only simultaneous effects multiply shuffles), so the member
+/// lands at a transient bottom position and the terminal `Shuffle` — which
+/// still runs when no member moves (CR 701.24c-d) and honors "can't shuffle" —
+/// owns the single randomization per owner. This is the single-object analogue of
+/// `MassLibraryShuffleMode::TerminalShuffle`; the marker is parser-stamped data on the
+/// chain's terminal `Shuffle`, found by the same chain scan that publishes the
+/// prospective owner population (`tracked_set_publication_mode`).
+fn terminal_shuffle_member_placement(
+    ability: &ResolvedAbility,
+    destination: Zone,
+) -> Option<LibraryPosition> {
+    (destination == Zone::Library
+        && matches!(
+            super::tracked_set_publication_mode(ability),
+            super::TrackedSetPublicationMode::Prospective {
+                cause: crate::types::ability::ThisWayCause::OwnerLibraryShuffleSubject,
+            }
+        ))
+    .then_some(LibraryPosition::Bottom)
+}
+
+/// The resume-time form of [`terminal_shuffle_member_placement`]: an interactive
+/// `EffectZoneChoice` parks the rest of the chain as the active continuation, so the
+/// terminal `Shuffle` (when the chain carries one) is read from that continuation.
+pub(crate) fn terminal_shuffle_resume_placement(
+    state: &GameState,
+    destination: Zone,
+) -> Option<LibraryPosition> {
+    state
+        .active_ability_continuation()
+        .and_then(|pending| terminal_shuffle_member_placement(&pending.chain, destination))
+}
+
+/// CR 701.24c-d: "If an effect would cause a player to shuffle one or more specific
+/// objects into a library, that library is shuffled even if none of those objects
+/// are in the zone they're expected to be in" (Guile exiled in response), and a set
+/// with no objects still shuffles. A move that finds nothing to move therefore still
+/// publishes the owners of the objects it NAMES — the source for a self-referential
+/// move, otherwise the declared targets — so the terminal owner-library `Shuffle`
+/// has its population. A no-op unless the chain carries that terminal shuffle.
+fn publish_named_owner_library_subjects(
+    state: &mut GameState,
+    ability: &ResolvedAbility,
+    target_filter: &TargetFilter,
+) {
+    let named: Vec<ObjectId> = if matches!(target_filter, TargetFilter::SelfRef) {
+        vec![ability.source_id]
+    } else {
+        ability
+            .targets
+            .iter()
+            .filter_map(|target| match target {
+                TargetRef::Object(id) => Some(*id),
+                TargetRef::Player(_) => None,
+            })
+            .collect()
+    }
+    .into_iter()
+    .filter(|id| state.objects.contains_key(id))
+    .collect();
+    publish_finalized_owner_library_subjects(state, ability, &named);
+}
+
 pub(super) fn publish_finalized_owner_library_subjects(
     state: &mut GameState,
     ability: &ResolvedAbility,
@@ -1041,6 +1108,8 @@ pub fn resolve(
         if ability.targeting_is_optional()
             && !matches!(ability.target_choice_timing, TargetChoiceTiming::Resolution)
         {
+            // CR 701.24d: a shuffled set with no objects still shuffles its owner.
+            publish_named_owner_library_subjects(state, ability, target_filter);
             events.push(GameEvent::EffectResolved {
                 kind: EffectKind::from(&ability.effect),
                 source_id: ability.source_id,
@@ -1054,6 +1123,9 @@ pub fn resolve(
         // remains (for example, a Warp delayed exile after a blink), the zone-scan
         // fallback must not rediscover a same-id return by raw equality.
         if matches!(target_filter, TargetFilter::SelfRef) && !ability.self_ref_is_current(state) {
+            // CR 701.24c: the source left the zone it was expected in, but the
+            // instruction still shuffles its owner's library.
+            publish_named_owner_library_subjects(state, ability, target_filter);
             events.push(GameEvent::EffectResolved {
                 kind: EffectKind::from(&ability.effect),
                 source_id: ability.source_id,
@@ -1238,7 +1310,7 @@ pub fn resolve(
                 face_down_profile.as_ref(),
                 ability.context.face_down_in_exile,
                 track_exiled_by_source,
-                None,
+                terminal_shuffle_member_placement(ability, dest_zone),
                 None,
                 Some(ability.controller),
                 // CR 608.2c: the controller follows the instruction, so it performs the move.
@@ -1315,7 +1387,7 @@ pub fn resolve(
                 face_down_profile.as_ref(),
                 ability.context.face_down_in_exile,
                 track_exiled_by_source,
-                None,
+                terminal_shuffle_member_placement(ability, dest_zone),
                 None,
                 Some(ability.controller),
                 // CR 608.2c: the controller follows the instruction, so it performs the move.
@@ -1421,7 +1493,7 @@ pub fn resolve(
         track_exiled_by_source,
         face_down_in_exile: ability.context.face_down_in_exile,
         face_down_profile: face_down_profile.clone(),
-        library_placement: None,
+        library_placement: terminal_shuffle_member_placement(ability, dest_zone),
         enter_attached_to: forward_result_search_attach_host(state, ability),
     };
     let _ = owner_library; // routing handled by move_to_zone (CR 400.7)
@@ -3353,6 +3425,117 @@ mod tests {
     use crate::types::replacements::ReplacementEvent;
     use crate::types::statics::{ProhibitionScope, StaticMode};
     use std::sync::Arc;
+
+    fn library_shuffle_count(events: &[GameEvent]) -> usize {
+        events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    GameEvent::PlayerPerformedAction {
+                        action: crate::types::events::PlayerActionKind::ShuffledLibrary,
+                        ..
+                    }
+                )
+            })
+            .count()
+    }
+
+    /// A graveyard card plus a library card, so a shuffle has something to permute.
+    fn state_with_graveyard_card() -> (GameState, ObjectId) {
+        let mut state = GameState::new_two_player(42);
+        let card = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Tucked".to_string(),
+            Zone::Graveyard,
+        );
+        create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Library Card".to_string(),
+            Zone::Library,
+        );
+        (state, card)
+    }
+
+    /// CR 701.24a: a move into a library with NO terminal `Shuffle` in its chain keeps
+    /// the zone pipeline's per-move shuffle convention. This is the control for the
+    /// suppression below: only a chain carrying the owner-library scope defers.
+    #[test]
+    fn bare_library_move_keeps_the_per_move_shuffle() {
+        let (mut state, card) = state_with_graveyard_card();
+        let definition = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::ChangeZone {
+                origin: Some(Zone::Graveyard),
+                destination: Zone::Library,
+                target: TargetFilter::SelfRef,
+                owner_library: true,
+                enter_transformed: false,
+                enters_under: None,
+                enter_tapped: EtbTapState::Unspecified,
+                enters_attacking: false,
+                up_to: false,
+                enter_with_counters: vec![],
+                conditional_enter_with_counters: vec![],
+                face_down_profile: None,
+                enters_modified_if: None,
+            },
+        );
+        let ability =
+            crate::game::ability_utils::build_resolved_from_def(&definition, card, PlayerId(0));
+        assert_eq!(
+            terminal_shuffle_member_placement(&ability, Zone::Library),
+            None
+        );
+
+        let mut events = Vec::new();
+        super::super::resolve_ability_chain(&mut state, &ability, &mut events, 0)
+            .expect("bare move resolves");
+
+        assert_eq!(state.objects[&card].zone, Zone::Library, "reach guard");
+        assert_eq!(library_shuffle_count(&events), 1);
+    }
+
+    /// CR 701.24a + CR 701.24c: "shuffle it into its owner's library" lowers to a move
+    /// plus the owner-scoped terminal `Shuffle`; the move defers its shuffle to the
+    /// terminal one, so the instruction randomizes the library exactly once.
+    #[test]
+    fn library_move_with_terminal_owner_shuffle_defers_to_it() {
+        let (mut state, card) = state_with_graveyard_card();
+        let definition = crate::parser::oracle_effect::parse_effect_chain(
+            "shuffle it into its owner's library",
+            AbilityKind::Spell,
+        );
+        assert!(matches!(
+            definition.effect.as_ref(),
+            Effect::ChangeZone {
+                destination: Zone::Library,
+                ..
+            }
+        ));
+        let ability =
+            crate::game::ability_utils::build_resolved_from_def(&definition, card, PlayerId(0));
+        assert_eq!(
+            terminal_shuffle_member_placement(&ability, Zone::Library),
+            Some(LibraryPosition::Bottom)
+        );
+        assert_eq!(
+            terminal_shuffle_member_placement(&ability, Zone::Hand),
+            None,
+            "only a library delivery is deferred"
+        );
+
+        let mut events = Vec::new();
+        super::super::resolve_ability_chain(&mut state, &ability, &mut events, 0)
+            .expect("compound shuffle resolves");
+
+        assert_eq!(state.objects[&card].zone, Zone::Library, "reach guard");
+        assert_eq!(library_shuffle_count(&events), 1);
+    }
 
     fn make_hand_choice_ability(up_to: bool) -> ResolvedAbility {
         ResolvedAbility::new(
