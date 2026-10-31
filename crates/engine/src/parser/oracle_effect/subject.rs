@@ -2867,6 +2867,112 @@ pub(super) fn subject_player_antecedent(subject: &SubjectPhraseAst) -> Option<Co
     }
 }
 
+/// CR 608.2c + CR 608.2k + CR 109.4 / CR 108.3: The single OBJECT a subject
+/// phrase introduces as the antecedent of a bare object pronoun ("it", "them")
+/// in its own predicate.
+///
+/// A POSSESSIVE-PLAYER subject names a player only by way of an object that
+/// player controls or owns, so the possessor is still in scope for the
+/// predicate and is the nearest antecedent its pronoun has. The printed shape
+/// is `"<determiner> <noun>'s controller|owner <verb>s it"` — "that creature's
+/// controller sacrifices IT at end of combat" (Basalt Golem), "enchanted
+/// permanent's controller sacrifices IT" (Reality Acid), "that creature's owner
+/// shuffles IT into their library" (Weeping Angel), "Target creature's owner
+/// shuffles IT into their library" (Ominous Cemetery), "That creature's owner
+/// puts IT on their choice of the top or bottom of their library" (Tolarian
+/// Contempt). CR 608.2c is the authorizing rule — "read the whole text and
+/// apply the rules of English to the text" — and CR 608.2k is what lets that
+/// untargeted reference keep naming the same object once the effect applies.
+///
+/// `ParentTargetController` (CR 109.4) and `ParentTargetOwner` (CR 108.3) are
+/// exactly the actor filters this grammar's possessor produces, so the pronoun
+/// names `ParentTarget` — the same referent those two actors resolve through at
+/// runtime (`ability_utils::parent_target_controller` / `parent_target_owner`).
+/// Measured base-to-head over the whole corpus, the lowerings this antecedent
+/// corrects are Basalt Golem's and Reality Acid's. Every other printed member
+/// of the shape is claimed by a DEDICATED WHOLE-CLAUSE OR WHOLE-BODY
+/// RECOGNIZER that runs before `parse_clause_ast` and derives the moved object
+/// from the possessor text itself, so it never reaches this function at all:
+/// `try_parse_owner_of_target_shuffle` (Ominous Cemetery, Watery Grasp,
+/// Cerulean Sphinx, and Weeping Angel's prevention rider),
+/// `try_parse_put_on_top_or_bottom` (Tolarian Contempt) and
+/// `try_parse_reanimator_aura_etb_effect_ir` (Animate Dead, Dance of the Dead),
+/// which hard-builds `Sacrifice { ParentTarget }` in `build_aura_attach_clause`.
+///
+/// Two further rungs would reach the same `ParentTarget` value if a card ever
+/// arrived through them, which is why the pin is idempotent rather than
+/// additive — an earlier clause's declared referent via `prior_typed_referent`
+/// (`oracle_effect::mod`'s chunk loop), and
+/// `oracle_replacement::rewrite_parent_target_to_post_replacement_damage_target`.
+/// Neither has a printed example that reaches this function today.
+///
+/// An ATTACHED-HOST possessor ("enchanted <noun>'s controller") reaches these
+/// filters only for the one noun `parse_target` recognizes, which is why
+/// Reality Acid qualifies and the rest of that family does not. Widening that
+/// recognizer is deliberately NOT part of this change: measured, the widened
+/// parse makes Parasitic Implant's "At the beginning of your upkeep, enchanted
+/// creature's controller sacrifices it" sacrifice NOTHING, because its phase
+/// trigger stamps `scoped_player` with the ACTIVE player (`triggers.rs`,
+/// CR 603.2b) and `sacrifice.rs`'s `ParentTarget` rung prefers that stamp over
+/// the object's own controller — so the correct subject becomes unauthorized
+/// (CR 701.21a) and the Aura mints its token every upkeep forever instead of
+/// sacrificing itself once. That actor rung is a separate defect; fixing it is
+/// what unlocks the rest of the attached-host family.
+///
+/// Three subject shapes that DO resolve to these filters are excluded:
+///
+/// * A SOURCE-possessive subject ("~'s controller sacrifices it" — Soul Ransom)
+///   produces `TargetFilter::SourceController`, never either parent-target
+///   actor, so it cannot reach this function at all: its possessor IS the
+///   ability's own source.
+/// * A BARE player anaphor ("that player", "the player") prints no possessor,
+///   yet resolves to `ParentTargetController` outside trigger context.
+/// * A BARE "they" / "they may" / "they each" subject likewise prints no
+///   possessor, and `resolve_they_pronoun` hands it `ParentTargetController`
+///   whenever the chain-spanning antecedent is armed.
+///
+/// Both pronoun forms RE-STATE an antecedent some earlier clause introduced
+/// rather than introducing one, so pinning their predicate's pronoun would
+/// override a nearer binding the trigger condition or the chain already
+/// established. `PlayerAnaphor::ThatPlayer` and `PlayerAnaphor::They` are the
+/// discriminants, and both are refused below.
+///
+/// The refusal is keyed on a discriminant rather than on an exhaustive match
+/// because three further routes reach these filters carrying
+/// `player_anaphor: None`, and two of them DO print a possessor: the generic
+/// `subject_filter_application` route a `parse_target`-recognized possessor
+/// takes (Reality Acid's own route), the "`<noun>'s controller or that player`"
+/// disjunct (Acorn Catapult), and the attacking-player anaphor — which prints
+/// none, and reaches `ParentTargetController` whenever no nearer player scope
+/// is live: outside trigger context, or inside one whose chain has armed
+/// `ParentTargetController`. The one printed attacking-player subject with a
+/// bare object pronoun in its predicate (Contested Game Ball, "the attacking
+/// player gains control of this artifact and untaps it") arms no such scope,
+/// answers with its event-context filter, and is measured unchanged
+/// base-to-head.
+///
+/// Declines a multi-target subject for the same reason
+/// [`subject_player_antecedent`] does: each announced object is the antecedent
+/// in turn, so no single `ParentTarget` can stand for them.
+pub(super) fn subject_possessive_object_antecedent(
+    subject: &SubjectPhraseAst,
+) -> Option<TargetFilter> {
+    if subject.multi_target.is_some() {
+        return None;
+    }
+    if matches!(
+        subject.player_anaphor,
+        Some(PlayerAnaphor::ThatPlayer | PlayerAnaphor::They)
+    ) {
+        return None;
+    }
+    matches!(
+        subject.affected,
+        Some(TargetFilter::ParentTargetController | TargetFilter::ParentTargetOwner)
+    )
+    .then_some(TargetFilter::ParentTarget)
+}
+
 /// Which player-subject anaphor a standalone "that/the player" clause names.
 ///
 /// Both forms resolve to an event-context `TargetFilter` via
@@ -3980,7 +4086,14 @@ fn parse_subject_application_for(
             multi_target: None,
             inherits_parent: false,
             is_optional,
-            player_anaphor: None,
+            // CR 608.2c: record WHICH player anaphor this phrase printed, as the
+            // "that player" arm does. The filter alone cannot say it: a bare
+            // "they" resolves to whatever antecedent is live — including
+            // `ParentTargetController`, which a printed possessive also
+            // produces — and a consumer that must tell "introduced here" from
+            // "re-stated here" (`subject_possessive_object_antecedent`) has
+            // only this discriminant to read.
+            player_anaphor: Some(PlayerAnaphor::They),
         });
     }
 
@@ -8757,6 +8870,129 @@ mod tests {
     use crate::types::card_type::{CoreType, Supertype};
     use crate::types::identifiers::TrackedSetId;
     use crate::types::statics::BlockExceptionKind;
+
+    fn subject_phrase_with(affected: TargetFilter) -> SubjectPhraseAst {
+        SubjectPhraseAst {
+            affected: Some(affected),
+            target: None,
+            multi_target: None,
+            inherits_parent: false,
+            is_optional: false,
+            player_anaphor: None,
+        }
+    }
+
+    /// CR 608.2c: a bare "they" subject records WHICH anaphor it printed, so a
+    /// consumer can tell a phrase that re-states the live antecedent from one
+    /// that introduces a possessor. Its resolved filter cannot carry that: under
+    /// an armed chain antecedent the pronoun resolves to the very
+    /// `ParentTargetController` a printed possessive also produces, which is the
+    /// collision `subject_possessive_object_antecedent` must refuse.
+    #[test]
+    fn a_bare_they_subject_records_the_pronoun_it_printed() {
+        for phrase in ["they", "they may", "they each"] {
+            let mut ctx = ParseContext {
+                relative_player_scope: Some(ControllerRef::ParentTargetController),
+                ..ParseContext::default()
+            };
+            let application = parse_subject_application(phrase, &mut ctx)
+                .unwrap_or_else(|| panic!("{phrase:?} is a player subject"));
+            // Reach guard: the collision is real — this phrase resolves to the
+            // same filter a printed possessive produces.
+            assert_eq!(
+                application.affected,
+                TargetFilter::ParentTargetController,
+                "{phrase:?} resolves through the armed chain antecedent"
+            );
+            assert_eq!(
+                application.player_anaphor,
+                Some(PlayerAnaphor::They),
+                "{phrase:?} must record its pronoun, or the pin below cannot refuse it"
+            );
+            assert_eq!(
+                subject_possessive_object_antecedent(&SubjectPhraseAst {
+                    affected: Some(application.affected.clone()),
+                    target: application.target.clone(),
+                    multi_target: application.multi_target.clone(),
+                    inherits_parent: application.inherits_parent,
+                    is_optional: application.is_optional,
+                    player_anaphor: application.player_anaphor,
+                }),
+                None,
+                "{phrase:?} re-states the antecedent, so its predicate's pronoun keeps the \
+                 nearer binding"
+            );
+        }
+    }
+
+    /// CR 608.2c + CR 608.2k: the possessor of a parent-target possessive-player
+    /// subject is the antecedent its predicate's bare object pronoun names; a
+    /// source-possessive or non-possessive subject introduces none, and a
+    /// multi-target subject names no single object.
+    #[test]
+    fn a_parent_target_possessive_subject_names_its_possessor() {
+        for actor in [
+            TargetFilter::ParentTargetController,
+            TargetFilter::ParentTargetOwner,
+        ] {
+            assert_eq!(
+                subject_possessive_object_antecedent(&subject_phrase_with(actor.clone())),
+                Some(TargetFilter::ParentTarget),
+                "{actor:?} is derived from a parent-target possessor"
+            );
+        }
+        for other in [
+            // "~'s controller sacrifices it" (Soul Ransom) — the possessor is
+            // the ability's own source.
+            TargetFilter::SourceController,
+            TargetFilter::Controller,
+            TargetFilter::TriggeringPlayer,
+            TargetFilter::Player,
+            TargetFilter::SelfRef,
+        ] {
+            assert_eq!(
+                subject_possessive_object_antecedent(&subject_phrase_with(other.clone())),
+                None,
+                "{other:?} is not a parent-target possessive actor"
+            );
+        }
+        assert_eq!(
+            subject_possessive_object_antecedent(&SubjectPhraseAst {
+                affected: None,
+                ..subject_phrase_with(TargetFilter::ParentTargetController)
+            }),
+            None,
+            "an unbound subject introduces no antecedent"
+        );
+        assert_eq!(
+            subject_possessive_object_antecedent(&SubjectPhraseAst {
+                multi_target: Some(MultiTargetSpec::exact(QuantityExpr::Fixed { value: 2 })),
+                ..subject_phrase_with(TargetFilter::ParentTargetController)
+            }),
+            None,
+            "CR 608.2c: each announced object is the antecedent in turn, so no single \
+             ParentTarget can stand for them"
+        );
+        for pronoun in [PlayerAnaphor::ThatPlayer, PlayerAnaphor::They] {
+            assert_eq!(
+                subject_possessive_object_antecedent(&SubjectPhraseAst {
+                    player_anaphor: Some(pronoun),
+                    ..subject_phrase_with(TargetFilter::ParentTargetController)
+                }),
+                None,
+                "{pronoun:?} prints no possessor — it re-states an antecedent an earlier \
+                 clause introduced, so its predicate's pronoun keeps the nearer binding"
+            );
+        }
+        assert_eq!(
+            subject_possessive_object_antecedent(&SubjectPhraseAst {
+                player_anaphor: Some(PlayerAnaphor::ItsController),
+                ..subject_phrase_with(TargetFilter::ParentTargetController)
+            }),
+            Some(TargetFilter::ParentTarget),
+            "the printed possessive anaphor still introduces its possessor"
+        );
+    }
 
     /// CR 613.1d: "isn't"/"aren't" head a type-removal predicate only when no
     /// relative pronoun introduces them. After "that"/"who"/"which" the copula

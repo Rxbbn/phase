@@ -29582,6 +29582,50 @@ fn lower_subject_predicate_ast(
     original_clause: &str,
     damage_context: DamageTargetContext,
 ) -> ParsedEffectClause {
+    // CR 608.2c + CR 608.2k: a possessive-player subject ("that creature's
+    // controller", "target creature's owner") names its player only by way of
+    // the object that player controls or owns, so that POSSESSOR stays in scope
+    // as the nearest antecedent of a bare object pronoun in this clause's own
+    // predicate — "that creature's controller sacrifices IT at end of combat"
+    // (Basalt Golem). See `subject::subject_possessive_object_antecedent` for
+    // the grammar and the exclusions.
+    // Pinning it here is what keeps `resolve_it_pronoun`'s `SelfRef` default
+    // (correct for a self-ETB "sacrifice it") from claiming a pronoun whose
+    // printed antecedent is the possessor. Scoped to the predicate lowering
+    // with the same save/restore discipline `with_player_scope` uses for the
+    // player antecedent, so the binding cannot leak into a sibling clause.
+    // `subject_possessive_object_antecedent` returns `None` for every other
+    // subject shape, which leaves the enclosing antecedent untouched.
+    match subject::subject_possessive_object_antecedent(&subject) {
+        Some(antecedent) => ctx.with_object_pronoun_ref(antecedent, |ctx| {
+            lower_subject_predicate_ast_player_seeded(
+                subject,
+                predicate,
+                ctx,
+                original_clause,
+                damage_context,
+            )
+        }),
+        None => lower_subject_predicate_ast_player_seeded(
+            subject,
+            predicate,
+            ctx,
+            original_clause,
+            damage_context,
+        ),
+    }
+}
+
+/// [`lower_subject_predicate_ast`] after the object antecedent is pinned: seeds
+/// the subject's PLAYER antecedent (CR 115.1 + CR 109.4) for the same predicate
+/// and lowers it.
+fn lower_subject_predicate_ast_player_seeded(
+    subject: SubjectPhraseAst,
+    predicate: PredicateAst,
+    ctx: &mut ParseContext,
+    original_clause: &str,
+    damage_context: DamageTargetContext,
+) -> ParsedEffectClause {
     let seed = if ctx.relative_player_scope.is_none() {
         subject::subject_player_antecedent(&subject)
     } else {
@@ -44817,9 +44861,13 @@ fn parse_effect_chain_ir_body(
     // `chunk_ctx` is rebuilt per chunk, so the group counter threads through this local.
     let mut chain_declared_groups = ctx.next_declared_player_group;
     // CR 608.2c + CR 109.4: Chain-spanning "its controller" antecedent. Armed
-    // when a chunk's leading subject is "its/their controller may <act>"
-    // (SubjectApplication { affected: ParentTargetController, is_optional: true });
-    // a later sentence's "that player" anaphor (Star Athlete) binds to it.
+    // when a chunk's leading subject resolves to `ParentTargetController` and
+    // either offers its own choice ("its/their controller may <act>" — Star
+    // Athlete) or printed the possessive anaphor outright
+    // (`PlayerAnaphor::ItsController`: "its controller", "<noun>'s controller"
+    // — Basalt Golem); see the arming site at the end of the chunk loop for
+    // both rungs and for what each one excludes. A later sentence's "that
+    // player" / "they" anaphor binds to it.
     // Unlike the Sentence-reset siblings, this MUST survive the sentence
     // boundary between "...sacrifice it." and "If they don't, ...", so it is
     // single-shot consumption-cleared (cleared once a downstream chunk binds a
@@ -49975,10 +50023,54 @@ fn parse_effect_chain_ir_body(
         // only ARMS. The arming chunk (leading subject "its controller may
         // <act>") has `seeded == false` (the local was None at its start), so the
         // hoisted clear was a no-op for it and this arm fires unimpeded.
-        if matches!(
-            leading_subject_application.as_ref(),
-            Some(app) if app.is_optional && app.affected == TargetFilter::ParentTargetController
-        ) {
+        //
+        // CR 608.2c: the antecedent is a property of the printed SUBJECT, not of
+        // its modality, so a MANDATORY possessive-controller subject arms it too
+        // — Basalt Golem's "that creature's controller sacrifices it at end of
+        // combat. If the player does, they create a 0/2 … Wall …" must bind "the
+        // player" / "they" to that creature's controller, which is the player
+        // CR 701.21a made the sacrificer, not to the ability's own controller.
+        //
+        // Two rungs, and the distinction between them is load-bearing: arming
+        // must fire for a subject that INTRODUCES this antecedent, never for one
+        // that merely CONSUMED it. `PlayerAnaphor::ItsController` is the printed
+        // possessive anaphor that introduces it ("its controller", "<noun>'s
+        // controller"); `is_optional` is the pre-existing rung, retained
+        // verbatim so no shape that armed before stops arming (a "that player
+        // may …" subject that resolved to `ParentTargetController` keeps it).
+        //
+        // A bare MANDATORY "they" subject carries neither rung, and that is what
+        // keeps the single-shot clear single-shot: in "its controller may pay 1
+        // life. If they do, they draw a card. That player discards a card."
+        // (issue #3659's leak guard) the middle sentence's "they" resolves
+        // THROUGH the armed scope, so re-arming on it would carry the creature's
+        // controller into the final independent "that player", which names the
+        // damaged opponent. A "they MAY …" subject still arms through the
+        // retained `is_optional` rung, exactly as it did at base — that rung is
+        // not narrowed here.
+        //
+        // Deliberately NARROWER than the clause-local pin
+        // (`subject::subject_possessive_object_antecedent`), which accepts every
+        // printed possessor including the ones that carry no discriminant at all
+        // (a `parse_target`-recognized possessor, the Acorn Catapult "or that
+        // player" disjunct). This scope spans SENTENCES, so widening it to a
+        // route with no discriminant would hand a later "that player" an
+        // antecedent on evidence the subject never printed as an anaphor. What
+        // the narrow rung costs is that the two discriminant-less possessive
+        // routes do not arm it — an attached-host subject ("enchanted
+        // permanent's controller") and the "<noun>'s controller or that player"
+        // disjunct (Acorn Catapult) — and no printed card pairs either with a
+        // gated "If the player does, they …" rider. A `ParentTargetOwner`
+        // possessive never arms this rung either; the owner scope below is its
+        // own, unconditional, single-shot local.
+        if leading_subject_application.as_ref().is_some_and(|app| {
+            app.affected == TargetFilter::ParentTargetController
+                && (app.is_optional
+                    || matches!(
+                        app.player_anaphor,
+                        Some(nom_target::PlayerAnaphor::ItsController)
+                    ))
+        }) {
             chain_parent_target_controller_scope = Some(ControllerRef::ParentTargetController);
         }
         if matches!(

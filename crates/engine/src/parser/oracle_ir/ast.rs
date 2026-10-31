@@ -97,6 +97,14 @@ pub(crate) struct SubjectApplication {
     /// CR 608.2c: the player anaphor the subject phrase printed, which names its
     /// antecedent where `affected` alone cannot ("that player" and "its controller"
     /// both lower to `ParentTargetController`).
+    ///
+    /// It records the printed SURFACE FORM, not a claim about what `affected`
+    /// resolved to: the "they" arm stamps `They` on every branch it takes,
+    /// including the ones where the pronoun's referent turned out to be an
+    /// object (`LastCreated` after a token creator, or a `resolve_they_pronoun`
+    /// object rung). Every reader therefore gates on a parent-target PLAYER
+    /// filter before consulting this field, and a future reader must not treat
+    /// `is_some()` on its own as "this subject is a player anaphor".
     #[serde(skip)]
     pub(crate) player_anaphor: Option<PlayerAnaphor>,
 }

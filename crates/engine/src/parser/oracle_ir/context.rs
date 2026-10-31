@@ -1072,6 +1072,25 @@ impl ParseContext {
         self.relative_player_scope = prev;
         result
     }
+
+    /// CR 608.2k: Execute `f` with a temporary bare-object-pronoun antecedent,
+    /// restoring the prior value on return. The object-anaphor counterpart of
+    /// [`Self::with_player_scope`], for a seam that establishes a nearer
+    /// antecedent than the enclosing one for a bounded span of text (a subject
+    /// phrase's own predicate). Save/restore, never set/clear, for the same
+    /// reason [`Self::stated_clause_duration`] is: a binding one clause
+    /// establishes must not outlive it, and a span that establishes none must
+    /// not clobber the enclosing one.
+    pub fn with_object_pronoun_ref<R>(
+        &mut self,
+        antecedent: TargetFilter,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let prev = self.object_pronoun_ref.replace(antecedent);
+        let result = f(self);
+        self.object_pronoun_ref = prev;
+        result
+    }
 }
 
 #[cfg(test)]
@@ -1085,6 +1104,33 @@ mod tests {
             context: "parse_target could not classify".into(),
             text: text.into(),
             line_index: 0,
+        }
+    }
+
+    /// CR 608.2k: the object-pronoun antecedent is SAVE/RESTORE, not set/clear.
+    /// A span that establishes a nearer antecedent must hand the enclosing one
+    /// back on return — otherwise a clause's own possessor would outlive it and
+    /// claim a later clause's pronoun — and that holds whether the enclosing
+    /// value was a pin or `None`.
+    #[test]
+    fn with_object_pronoun_ref_hands_the_enclosing_antecedent_back() {
+        for enclosing in [None, Some(TargetFilter::TriggeringSource)] {
+            let mut ctx = ParseContext {
+                object_pronoun_ref: enclosing.clone(),
+                ..ParseContext::default()
+            };
+            let seen = ctx.with_object_pronoun_ref(TargetFilter::ParentTarget, |ctx| {
+                ctx.object_pronoun_ref.clone()
+            });
+            assert_eq!(
+                seen,
+                Some(TargetFilter::ParentTarget),
+                "reach guard: the span really did see the nearer antecedent"
+            );
+            assert_eq!(
+                ctx.object_pronoun_ref, enclosing,
+                "the enclosing antecedent must be restored, including when it was None"
+            );
         }
     }
 
