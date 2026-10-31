@@ -2395,7 +2395,7 @@ pub(crate) fn parse_static_line_inner(
                 // less and/or Walls") closes the leg before the leg grammar's
                 // early union loop can see the separator.
                 let phrase = match parse_chosen_qualifier_subject(&by_rest_tp) {
-                    Some(chosen) => BlockFilterPhrase::from_parts(chosen, ""),
+                    Some(chosen) => BlockFilterPhrase::from_whole_phrase_filter(chosen),
                     None => parse_block_filter_phrase(by_rest),
                 };
                 // Coverage honesty, and it MUST be a `return`, not a skipped arm:

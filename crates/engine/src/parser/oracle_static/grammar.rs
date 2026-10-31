@@ -587,23 +587,33 @@ fn must_be_blocked_quality_to_filter(quality: &str) -> Option<TargetFilter> {
     let quality_lower = quality.to_lowercase();
     let quality_tp = TextPair::new(quality, &quality_lower);
     // CR 509.1c + CR 608.2c (issue #10364): the captured span is a filter and
-    // nothing else, so read it with the same union-folding reader the CR 509.1b
-    // restriction path uses - a separator that follows the quality's own
-    // trailing suffix ("Walls and/or creatures with power 2 or less") is
-    // invisible to the leg grammar's early union loop.
+    // nothing else, so read it through the SAME authority the CR 509.1b
+    // restriction path uses. The shape that needs it is a separator following
+    // the quality's own trailing suffix - "creatures with power 2 or less
+    // and/or Walls" - which the leg grammar's early union loop runs before and
+    // therefore never sees.
     //
-    // KNOWN GAP, stated because the example above is deliberately article-LESS:
+    // `BlockFilterPhrase` is what makes `filter_constrains_blocker`'s contract
+    // ("decline rather than weaken") true for a dropped disjunct too: an
+    // unreadable "and/or" leg is `DroppedDisjunct`, which returns `None` here,
+    // so a STRICTER-than-printed CR 509.1c requirement is never published.
+    // Reading only the filter would not catch it - `filter_constrains_blocker`
+    // inspects the filter alone and accepts any non-empty `Typed`.
+    //
+    // The article-led disjunct ("a Dalek and/or a Wall") is the live shape for
+    // this grammar, since the qualities it captures are article-led.
     // `fold_type_union`'s continuation guard is `starts_with_type_word`, which
-    // has no article arm, and the qualities THIS requirement grammar captures
-    // are article-led ("a Dalek", "an Eldrazi"). A second disjunct spelled
-    // "... and/or a Wall" therefore stays in the remainder and is declined by
-    // `filter_constrains_blocker` below - honest, but unsupported. Folding it
-    // would mean composing `oracle_target::fold_article_led_type_union` into the
-    // continuation guard; no printed card needs that yet.
-    let filter = parse_chosen_qualifier_subject(&quality_tp).unwrap_or_else(|| {
-        let (f, _) = parse_filter_phrase_union(&quality_lower);
-        f
-    });
+    // has no article arm, so that leg is not folded - it is DECLINED, as an
+    // honest gap. Folding it would mean composing
+    // `oracle_target::fold_article_led_type_union` into the continuation guard;
+    // no printed card needs that yet.
+    let filter = match parse_chosen_qualifier_subject(&quality_tp) {
+        Some(chosen) => BlockFilterPhrase::from_whole_phrase_filter(chosen),
+        None => parse_block_filter_phrase(&quality_lower),
+    };
+    let BlockFilterPhrase::Filter { filter, .. } = filter else {
+        return None;
+    };
     filter_constrains_blocker(&filter).then_some(filter)
 }
 
@@ -1028,11 +1038,16 @@ pub(crate) fn parse_enchanted_equipped_predicate(
     if nom_tag_lower(body_lower, body_lower, "can't be blocked").is_some() {
         // "can't be blocked except by" → CantBeBlockedExceptBy
         if let Some(rest) = nom_tag_lower(body_lower, body_lower, "can't be blocked except by ") {
-            let mut def = StaticDefinition::new(StaticMode::CantBeBlockedExceptBy {
-                kind: classify_block_exception(rest),
-            })
-            .affected(affected.clone())
-            .description(description.to_string());
+            // Fail closed on a dropped disjunct, and it MUST be a `return`: the
+            // blanket `CantBeBlocked` form at the end of this block is the
+            // fall-through, so skipping the arm would publish total
+            // unblockability (see `classify_block_exception`).
+            let Some(kind) = classify_block_exception(rest) else {
+                return Vec::new();
+            };
+            let mut def = StaticDefinition::new(StaticMode::CantBeBlockedExceptBy { kind })
+                .affected(affected.clone())
+                .description(description.to_string());
             if let Some(condition) = &suffix_condition {
                 attach_gated_condition(&mut def, condition.clone(), &gap_text);
             }
@@ -1057,7 +1072,7 @@ pub(crate) fn parse_enchanted_equipped_predicate(
             // leg before the leg grammar's early union loop can see the
             // separator.
             let phrase = match parse_chosen_qualifier_subject(&filter_text_tp) {
-                Some(chosen) => BlockFilterPhrase::from_parts(chosen, ""),
+                Some(chosen) => BlockFilterPhrase::from_whole_phrase_filter(chosen),
                 None => parse_block_filter_phrase(filter_text),
             };
             // Coverage honesty, and it MUST be a `return`, not a skipped arm:

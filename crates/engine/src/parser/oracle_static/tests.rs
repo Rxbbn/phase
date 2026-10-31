@@ -4534,6 +4534,120 @@ fn static_block_restriction_declines_an_unreadable_disjunct_without_going_blanke
     }
 }
 
+/// CR 509.1c (issue #10364) — the REQUIREMENT half, which had no test at all.
+/// `must_be_blocked_quality_to_filter` reads its quality through the same
+/// `BlockFilterPhrase` authority, so an "and/or" disjunct it cannot read must
+/// DECLINE the requirement rather than publish a stricter-than-printed one.
+///
+/// The article-led disjunct is the live shape here, because the qualities this
+/// grammar captures are article-led.
+#[test]
+fn static_must_be_blocked_quality_declines_an_unreadable_disjunct() {
+    // Positive reach-guard FIRST, so the `None` rows below are known to be
+    // remainder rejections rather than a grammar that never matched.
+    let def = parse_static_line("Equipped creature must be blocked by a Dalek if able.")
+        .expect("the single-quality requirement must still parse");
+    assert!(
+        matches!(
+            &def.mode,
+            StaticMode::MustBeBlocked { by: Some(TargetFilter::Typed(t)) }
+                if t.type_filters.contains(&TypeFilter::Subtype("Dalek".into()))
+        ),
+        "expected MustBeBlocked by a Dalek, got {:?}",
+        def.mode
+    );
+
+    for line in [
+        "Equipped creature must be blocked by a Dalek and/or a Wall if able.",
+        "Equipped creature gets +2/+2 and must be blocked by a Dalek and/or a Wall if able.",
+    ] {
+        let by: Vec<_> = parse_static_line_multi(line)
+            .iter()
+            .filter_map(|d| match &d.mode {
+                StaticMode::MustBeBlocked { by } => Some(by.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            by.is_empty(),
+            "{line}: a half-read CR 509.1c quality must not be published, got {by:?}"
+        );
+    }
+}
+
+/// CR 509.1b (issue #10364) — the POSITIVE fold path on the `dispatch.rs`
+/// self-reference route (`parse_static_line_inner`), whose decline path is
+/// covered above but whose accept path was not. "~" names the source, so this
+/// line reaches that route rather than the enchanted/equipped one.
+#[test]
+fn static_self_ref_block_restriction_folds_the_union() {
+    let def =
+        parse_static_line("~ can't be blocked by creatures with power 2 or less and/or Walls.")
+            .expect("the union restriction must parse");
+    assert_eq!(def.affected, Some(TargetFilter::SelfRef));
+    let StaticMode::CantBeBlockedBy {
+        filter: TargetFilter::Or { filters },
+    } = &def.mode
+    else {
+        panic!(
+            "expected a two-leg union CantBeBlockedBy, got {:?}",
+            def.mode
+        );
+    };
+    assert_eq!(filters.len(), 2, "{filters:?}");
+    assert!(
+        filters.iter().any(|f| matches!(
+            f,
+            TargetFilter::Typed(t)
+                if t.type_filters.contains(&TypeFilter::Subtype("Wall".into()))
+                    && t.properties.is_empty()
+        )),
+        "the Wall disjunct must be present and unconstrained: {filters:?}"
+    );
+}
+
+/// CR 608.2c (issue #10364) — the `TypePhrase` fold must not swallow a
+/// following INDEPENDENT clause. ", and creatures blocking it get -1/-1" passes
+/// the syntactic continuation guard (it leads with a type word that parses to a
+/// non-empty filter), but its leg leaves a verb phrase behind, so it is not a
+/// union leg. Folding it would union in a bare `Typed{Creature}` that matches
+/// every blocker — total unblockability — and drop the rider with no gap.
+#[test]
+fn static_block_restriction_does_not_fold_a_following_clause() {
+    let line = "~ can't be blocked by creatures with power 1 or less,                 and creatures blocking it get -1/-1.";
+    let filters: Vec<_> = parse_static_line_multi(line)
+        .iter()
+        .filter_map(|d| match &d.mode {
+            StaticMode::CantBeBlockedBy { filter } => Some(filter.clone()),
+            _ => None,
+        })
+        .collect();
+    for filter in &filters {
+        assert!(
+            !matches!(filter, TargetFilter::Or { .. }),
+            "the following clause must not become a union leg: {filter:?}"
+        );
+        assert!(
+            !matches!(filter, TargetFilter::Typed(t) if t.type_filters == vec![TypeFilter::Creature] && t.properties.is_empty()),
+            "no leg may be a bare creature filter matching every blocker: {filter:?}"
+        );
+    }
+    // Positive reach-guard: the identical phrase whose continuation IS a union
+    // leg still folds, so the assertions above are the leg-consumption guard
+    // firing rather than the separator scan declining.
+    let folded =
+        parse_static_line("~ can't be blocked by creatures with power 1 or less, and Walls.")
+            .expect("a real union continuation must still parse");
+    assert!(
+        matches!(
+            &folded.mode,
+            StaticMode::CantBeBlockedBy { filter: TargetFilter::Or { filters } } if filters.len() == 2
+        ),
+        "expected the two-leg union, got {:?}",
+        folded.mode
+    );
+}
+
 #[test]
 fn static_cant_be_blocked_by_more_than_one_creature() {
     // CR 509.1b: Stalking Tiger — per-creature blocker maximum. Must NOT collapse
@@ -23292,18 +23406,36 @@ fn cant_be_blocked_unconditional() {
 fn classify_block_exception_count_vs_quality() {
     assert_eq!(
         classify_block_exception("three or more creatures."),
-        BlockExceptionKind::MinBlockers { min: 3 }
+        Some(BlockExceptionKind::MinBlockers { min: 3 })
     );
     assert_eq!(
         classify_block_exception("six or more creatures"),
-        BlockExceptionKind::MinBlockers { min: 6 }
+        Some(BlockExceptionKind::MinBlockers { min: 6 })
     );
     assert!(
         matches!(
             classify_block_exception("artifact creatures."),
-            BlockExceptionKind::Quality(_)
+            Some(BlockExceptionKind::Quality(_))
         ),
         "Expected Quality kind for a quality phrase"
+    );
+    // CR 509.1b + CR 608.2c (issue #10364): a printed "and/or" disjunct the leg
+    // grammar cannot read must DECLINE, because dropping it makes the whitelist
+    // narrower than printed - the attacker becomes harder to block than its text
+    // says. The readable-union row above is the positive reach-guard.
+    assert_eq!(
+        classify_block_exception("creatures with power 2 or less and/or your commander"),
+        None
+    );
+    // An UNCONSTRAINED tail still lowers to `Quality`, unchanged: that is the
+    // pre-existing shape of every "except by" phrase the filter grammar cannot
+    // read, and flipping those to unsupported is a different change.
+    assert!(
+        matches!(
+            classify_block_exception("three or"),
+            Some(BlockExceptionKind::Quality(_))
+        ),
+        "an unreadable-but-separator-free tail keeps its Quality lowering"
     );
 }
 

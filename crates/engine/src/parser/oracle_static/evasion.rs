@@ -21,30 +21,29 @@ pub(crate) fn parse_min_blockers_phrase(input: &str) -> OracleResult<'_, u32> {
 /// typed `BlockExceptionKind`. A leading count phrase ("N or more creatures")
 /// is a minimum-blocker constraint; everything else is a per-blocker quality
 /// filter. The parser IS the count-vs-quality detector — combat never re-parses.
-pub(crate) fn classify_block_exception(filter_text: &str) -> BlockExceptionKind {
+pub(crate) fn classify_block_exception(filter_text: &str) -> Option<BlockExceptionKind> {
     let trimmed = filter_text.trim_end_matches('.').trim();
     if let Ok((_, min)) = parse_min_blockers_phrase(trimmed) {
-        BlockExceptionKind::MinBlockers { min }
-    } else {
-        let normalized = strip_redundant_block_exception_by(trimmed);
-        // CR 509.1b + CR 608.2c (issue #10364): the whole phrase after "except
-        // by " is the exception filter, so fold its union legs. `parse_target`
-        // alone closes a leg on its own trailing suffix and never sees a
-        // separator that follows one ("creatures with power 2 or less and/or
-        // Walls"), which would publish only the first disjunct.
-        //
-        // The tail is dropped here exactly as the previous `parse_target(..).0`
-        // dropped it: this function's contract is "classify, always return a
-        // kind", and `BlockExceptionKind` has no decline channel. The fold
-        // strictly shrinks what is dropped; tightening the drop into a decline
-        // would change every caller of `CantBeBlockedExceptBy` and belongs to
-        // its own change.
-        let (filter, _tail) = fold_type_union(
-            &normalized,
-            &mut ParseContext::default(),
-            TypeUnionLeg::TargetPhrase,
-        );
-        BlockExceptionKind::Quality(filter)
+        return Some(BlockExceptionKind::MinBlockers { min });
+    }
+    let normalized = strip_redundant_block_exception_by(trimmed);
+    // CR 509.1b + CR 608.2c (issue #10364): the whole phrase after "except by "
+    // is the exception filter, so fold its union legs. `parse_target` alone
+    // closes a leg on its own trailing suffix and never sees a separator that
+    // follows one ("creatures with power 2 or less and/or Walls").
+    //
+    // A dropped disjunct here makes the whitelist NARROWER than printed - the
+    // attacker becomes harder to block than its text says - so this returns
+    // `None` and every caller fails closed, matching the `by` direction. Only
+    // `DroppedDisjunct` declines: an `Unconstrained` filter still lowers to
+    // `Quality` exactly as before, because that is the pre-existing shape of
+    // every "except by" tail the filter grammar cannot read (B.F.M.'s "three
+    // or", Agility Bobblehead's ", where X is ...") and flipping those to
+    // unsupported is a different change.
+    match parse_block_exception_phrase(&normalized) {
+        BlockFilterPhrase::Filter { filter, .. } => Some(BlockExceptionKind::Quality(filter)),
+        BlockFilterPhrase::Unconstrained => Some(BlockExceptionKind::Quality(TargetFilter::Any)),
+        BlockFilterPhrase::DroppedDisjunct => None,
     }
 }
 
@@ -1818,9 +1817,10 @@ pub(crate) fn cant_be_blocked_mode(clause: &str) -> Option<(StaticMode, Option<S
     let rest = rest.trim_end_matches('.').trim_end();
     // "except by <filter>" → CantBeBlockedExceptBy (quality or min-blockers).
     if let Some(filter) = nom_tag_lower(rest, rest, " except by ") {
+        // Fail closed on a dropped disjunct (see `classify_block_exception`).
         return Some((
             StaticMode::CantBeBlockedExceptBy {
-                kind: classify_block_exception(filter),
+                kind: classify_block_exception(filter)?,
             },
             None,
         ));
@@ -1852,7 +1852,7 @@ pub(crate) fn cant_be_blocked_mode(clause: &str) -> Option<(StaticMode, Option<S
         // Coverage honesty: `DroppedDisjunct` and `Unconstrained` both decline
         // here, which this arm already did for an unreadable filter.
         let phrase = match parse_chosen_qualifier_subject(&filter_tp) {
-            Some(chosen) => BlockFilterPhrase::from_parts(chosen, ""),
+            Some(chosen) => BlockFilterPhrase::from_whole_phrase_filter(chosen),
             None => parse_block_filter_phrase(filter_text),
         };
         if let BlockFilterPhrase::Filter {
@@ -2455,8 +2455,9 @@ pub(crate) fn parse_subject_rule_static(text: &str) -> Option<StaticDefinition> 
             )
         })
     {
+        // Fail closed on a dropped disjunct (see `classify_block_exception`).
         let def = StaticDefinition::new(StaticMode::CantBeBlockedExceptBy {
-            kind: classify_block_exception(rest),
+            kind: classify_block_exception(rest)?,
         })
         .affected(affected.clone())
         .description(text.to_string());

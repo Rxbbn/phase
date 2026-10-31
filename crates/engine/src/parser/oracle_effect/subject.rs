@@ -7623,8 +7623,11 @@ pub(crate) fn parse_restriction_modes(lower: &str) -> Option<Vec<StaticMode>> {
     )
         .parse(lower)
     {
+        // Fail closed on a dropped disjunct (see `classify_block_exception`):
+        // `None` here declines the whole predicate rather than publishing a
+        // whitelist narrower than the printed one.
         return Some(vec![StaticMode::CantBeBlockedExceptBy {
-            kind: classify_block_exception(except_text),
+            kind: classify_block_exception(except_text)?,
         }]);
     }
     // CR 509.1b: "can't be blocked by <filter>" — blocker restriction
@@ -7648,7 +7651,7 @@ pub(crate) fn parse_restriction_modes(lower: &str) -> Option<Vec<StaticMode>> {
         // the power suffix, which the leg grammar's own early union loop runs
         // before and therefore never folds.
         let phrase = match parse_chosen_qualifier_subject(&filter_tp) {
-            Some(chosen) => BlockFilterPhrase::from_parts(chosen, ""),
+            Some(chosen) => BlockFilterPhrase::from_whole_phrase_filter(chosen),
             None => parse_block_filter_phrase(filter_text),
         };
         match phrase {
@@ -12073,7 +12076,8 @@ mod tests {
     /// must be stripped so the full union parses, not just its first disjunct.
     #[test]
     fn classify_block_exception_strips_redundant_by() {
-        let kind = classify_block_exception("vehicles or by creatures with haste");
+        let kind = classify_block_exception("vehicles or by creatures with haste")
+            .expect("a readable exception union must classify");
         let BlockExceptionKind::Quality(TargetFilter::Or { filters }) = kind else {
             panic!("expected a quality Or filter, got {kind:?}");
         };
