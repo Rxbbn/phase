@@ -4318,6 +4318,222 @@ fn static_cant_be_blocked_by_greater_power() {
     );
 }
 
+/// CR 509.1b + CR 608.2c (issue #10364): the printed blocking-restriction
+/// family that carries a union separator AFTER a leg's own trailing suffix, or a
+/// trailing duration/gate the union fold must leave alone. One row per corpus
+/// SHAPE, so a fold that over-consumed (swallowing " as long as …") or
+/// under-consumed (dropping a disjunct) fails here rather than silently
+/// narrowing a card.
+#[test]
+fn static_block_restriction_union_and_tail_shapes() {
+    fn or_legs(filter: &TargetFilter) -> usize {
+        match filter {
+            TargetFilter::Or { filters } => filters.len(),
+            _ => 1,
+        }
+    }
+    // (printed line, expected disjunct count, expected trailing condition?)
+    let rows: &[(&str, usize, bool)] = &[
+        // Doorman's class on a printed static: suffix, then "and/or", then a subtype.
+        (
+            "~ can't be blocked by creatures with power 2 or less and/or Walls.",
+            2,
+            false,
+        ),
+        // Sacred Knight — color disjuncts sharing one head noun (one leg each).
+        ("~ can't be blocked by black and/or red creatures.", 2, false),
+        // Rampart Smasher — a bare subtype union, folded by the early within-leg loop.
+        ("~ can't be blocked by Knights or Walls.", 2, false),
+        // Arctic Foxes — suffix then a GATE, not a disjunct. The fold must not
+        // touch it and the condition must still attach.
+        (
+            "~ can't be blocked by creatures with power 2 or greater as long as defending player controls a snow land.",
+            1,
+            true,
+        ),
+        // Questing Beast — single leg, no tail (the unchanged base case).
+        (
+            "~ can't be blocked by creatures with power 2 or less.",
+            1,
+            false,
+        ),
+    ];
+    for (line, expected_legs, expects_condition) in rows {
+        let def = parse_static_line(line).unwrap_or_else(|| panic!("{line} must parse"));
+        let StaticMode::CantBeBlockedBy { filter } = &def.mode else {
+            panic!("{line}: expected CantBeBlockedBy, got {:?}", def.mode);
+        };
+        assert_eq!(or_legs(filter), *expected_legs, "{line}: {filter:?}");
+        assert_eq!(
+            def.condition.is_some(),
+            *expects_condition,
+            "{line}: condition {:?}",
+            def.condition
+        );
+    }
+}
+
+/// CR 509.1b: the "except by" half of the same family. Elven Riders carries the
+/// suffix-then-"and/or" shape; the other rows are the sibling tails the fold
+/// must leave untouched.
+#[test]
+fn static_block_exception_union_and_tail_shapes() {
+    fn or_legs(filter: &TargetFilter) -> usize {
+        match filter {
+            TargetFilter::Or { filters } => filters.len(),
+            _ => 1,
+        }
+    }
+    let rows: &[(&str, usize)] = &[
+        // THE DISCRIMINATOR for the `classify_block_exception` hunk: every
+        // printed "except by" union puts its separator right after the head
+        // noun, where the leg grammar's own early loop already folds it, so no
+        // printed card distinguishes the fold here. This row does - the
+        // separator follows the first leg's trailing power suffix, and with the
+        // fold reverted the Walls disjunct is dropped and the count is 1.
+        (
+            "~ can't be blocked except by creatures with power 2 or less and/or Walls.",
+            2,
+        ),
+        (
+            "~ can't be blocked except by Walls and/or creatures with flying.",
+            2,
+        ),
+        (
+            "~ can't be blocked except by artifact creatures and/or red creatures.",
+            2,
+        ),
+        // Fast // Furious — the repeated "by" before the second disjunct.
+        (
+            "~ can't be blocked except by Vehicles or by creatures with haste.",
+            2,
+        ),
+        // Serpent of Yawning Depths — a four-way Oxford-comma subtype union.
+        (
+            "~ can't be blocked except by Krakens, Leviathans, Octopuses, and Serpents.",
+            4,
+        ),
+        // Canopy Cover — "flying or reach" is a KEYWORD disjunction, already
+        // split into one leg per keyword by the `with <kw> or <kw>` suffix
+        // grammar (not by this fold: "reach" is not a type word, so the
+        // continuation guard rejects it). Pinned so the fold cannot start
+        // double-counting or collapsing it.
+        (
+            "~ can't be blocked except by creatures with flying or reach.",
+            2,
+        ),
+        ("~ can't be blocked except by creatures with defender.", 1),
+    ];
+    for (line, expected_legs) in rows {
+        let def = parse_static_line(line).unwrap_or_else(|| panic!("{line} must parse"));
+        let StaticMode::CantBeBlockedExceptBy {
+            kind: BlockExceptionKind::Quality(filter),
+        } = &def.mode
+        else {
+            panic!(
+                "{line}: expected a Quality block exception, got {:?}",
+                def.mode
+            );
+        };
+        assert_eq!(or_legs(filter), *expected_legs, "{line}: {filter:?}");
+    }
+}
+
+/// CR 509.1b: the blocker-side sibling — "<subject> can't block <object>" reads
+/// its object through the same shared filter authority, so the union fold covers
+/// it too, and its non-object tails ("unless …") must still decline to the
+/// condition grammar instead of being eaten.
+#[test]
+fn static_block_object_union_and_tail_shapes() {
+    // Cyclops Tyrant's printed shape plus the Doorman-class union on it.
+    for (line, expected_legs) in [
+        ("~ can't block creatures with power 2 or less.", 1usize),
+        (
+            "~ can't block creatures with power 2 or less and/or Walls.",
+            2,
+        ),
+    ] {
+        let def = parse_static_line(line).unwrap_or_else(|| panic!("{line} must parse"));
+        let StaticMode::BlockRestriction {
+            filter: TargetFilter::Not { filter },
+        } = &def.mode
+        else {
+            panic!(
+                "{line}: expected BlockRestriction(Not(..)), got {:?}",
+                def.mode
+            );
+        };
+        let legs = match filter.as_ref() {
+            TargetFilter::Or { filters } => filters.len(),
+            _ => 1,
+        };
+        assert_eq!(legs, expected_legs, "{line}: {filter:?}");
+    }
+    // Hipparion — the object is followed by an "unless" gate, which is NOT a
+    // union leg and must not be consumed by the fold.
+    let def =
+        parse_static_line("~ can't block creatures with power 3 or greater unless you pay {1}.")
+            .unwrap_or_else(|| panic!("Hipparion's line must parse"));
+    assert!(
+        matches!(def.mode, StaticMode::BlockRestriction { .. }),
+        "expected a BlockRestriction, got {:?}",
+        def.mode
+    );
+}
+
+/// CR 509.1b (issue #10364) — FAIL CLOSED. An "and/or" disjunct the filter
+/// grammar cannot read must decline the whole line, never fall through to the
+/// blanket `CantBeBlocked` form these dispatch blocks end in: that would publish
+/// total unblockability, which is WIDER than the printed restriction, not
+/// narrower — and in `parse_enchanted_equipped_predicate` it carries no
+/// `Unrecognized` marker, so it would be green.
+///
+/// Both rows are negative; the positive reach-guard is the row pair below them,
+/// which proves the same wordings with a READABLE second disjunct still publish
+/// a two-leg `CantBeBlockedBy`.
+#[test]
+fn static_block_restriction_declines_an_unreadable_disjunct_without_going_blanket() {
+    for line in [
+        "~ can't be blocked by creatures with power 2 or less and/or your commander.",
+        "Enchanted creature can't be blocked by creatures with power 2 or less and/or your commander.",
+    ] {
+        let modes: Vec<_> = parse_static_line_multi(line)
+            .iter()
+            .map(|d| d.mode.clone())
+            .collect();
+        assert!(
+            !modes
+                .iter()
+                .any(|m| matches!(m, StaticMode::CantBeBlocked)),
+            "{line} must NOT lower to a blanket CantBeBlocked, got {modes:?}"
+        );
+        assert!(
+            !modes
+                .iter()
+                .any(|m| matches!(m, StaticMode::CantBeBlockedBy { .. })),
+            "{line} must NOT publish a half-read blocker filter, got {modes:?}"
+        );
+    }
+    // Positive reach-guard: the same two wordings with a readable second
+    // disjunct DO publish the two-leg restriction, so the assertions above are
+    // remainder rejections and not a dead arm.
+    for line in [
+        "~ can't be blocked by creatures with power 2 or less and/or Walls.",
+        "Enchanted creature can't be blocked by creatures with power 2 or less and/or Walls.",
+    ] {
+        let legs = parse_static_line_multi(line)
+            .iter()
+            .find_map(|d| match &d.mode {
+                StaticMode::CantBeBlockedBy {
+                    filter: TargetFilter::Or { filters },
+                } => Some(filters.len()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{line} must publish a union CantBeBlockedBy"));
+        assert_eq!(legs, 2, "{line}");
+    }
+}
+
 #[test]
 fn static_cant_be_blocked_by_more_than_one_creature() {
     // CR 509.1b: Stalking Tiger — per-creature blocker maximum. Must NOT collapse

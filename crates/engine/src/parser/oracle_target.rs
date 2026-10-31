@@ -2778,7 +2778,63 @@ pub(crate) fn parse_mass_type_union<'a>(
     text: &'a str,
     ctx: &mut ParseContext,
 ) -> (TargetFilter, &'a str) {
-    let (mut acc, mut rest) = parse_target_with_ctx(text, ctx);
+    fold_type_union(text, ctx, TypeUnionLeg::TargetPhrase)
+}
+
+/// CR 205.2a + CR 205.3a + CR 608.2c: Which leg grammar a [`fold_type_union`]
+/// continuation is read with. Both arms share one separator scan and one
+/// `merge_or_filters` fold; only the leg reader (and whether a repeated
+/// "all "/"each " pluralizer may precede a leg) differs, so the axis is a typed
+/// parameter rather than two copies of the loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TypeUnionLeg {
+    /// Each leg is a full [`parse_target_with_ctx`] phrase and may repeat an
+    /// "all "/"each " pluralizer — the mass-target continuation shape
+    /// ("…, all artifacts, and all enchantments", Everything Comes to Dust)
+    /// and the "except by" evasion filter ("Vehicles or creatures with haste",
+    /// Fast // Furious).
+    TargetPhrase,
+    /// Each leg is a [`parse_type_phrase_folding_with_ctx`] phrase, with no
+    /// pluralizer — "creatures with power 2 or less and/or Walls" (Doorman).
+    TypePhrase,
+}
+
+fn read_type_union_leg<'a>(
+    text: &'a str,
+    ctx: &mut ParseContext,
+    leg: TypeUnionLeg,
+) -> (TargetFilter, &'a str) {
+    match leg {
+        TypeUnionLeg::TargetPhrase => parse_target_with_ctx(text, ctx),
+        TypeUnionLeg::TypePhrase => parse_type_phrase_folding_with_ctx(text, ctx),
+    }
+}
+
+/// CR 205.2a + CR 205.3a + CR 608.2c: Fold a type union whose separator sits
+/// where the leg grammar's own early union loop has already stopped.
+///
+/// Both leg grammars close a leg as soon as they have consumed its trailing
+/// suffixes, and their early union loop runs BEFORE that suffix scan. A
+/// separator that follows a leg's own suffix is therefore never seen by it:
+/// "creatures with power 2 or less and/or Walls" (Doorman) closes after the
+/// power suffix and hands " and/or Walls" back as remainder, and a caller that
+/// drops the remainder silently ships half the union. CR 608.2c ("read the
+/// whole text and apply the rules of English to the text") is the reading this
+/// restores — the power suffix binds to the noun it follows, and the second
+/// disjunct is a separate, unconstrained leg.
+///
+/// A single-leg input returns exactly what the leg reader returns, so every
+/// existing caller is unchanged unless a separator genuinely continues the
+/// list. Each continuation must lead with a recognized type word
+/// ([`starts_with_type_word`]) and must itself parse to a non-empty filter;
+/// an article-led continuation ("… and a land") is deliberately NOT accepted,
+/// because that shape is a sibling clause rather than a union leg.
+pub(crate) fn fold_type_union<'a>(
+    text: &'a str,
+    ctx: &mut ParseContext,
+    leg: TypeUnionLeg,
+) -> (TargetFilter, &'a str) {
+    let (mut acc, mut rest) = read_type_union_leg(text, ctx, leg);
     loop {
         let lower = rest.to_lowercase();
         let Some(sep_len) = match_mass_union_separator(&lower) else {
@@ -2787,19 +2843,163 @@ pub(crate) fn parse_mass_type_union<'a>(
         let after_sep = &rest[sep_len..];
         let after_sep_lower = after_sep.to_lowercase();
         // Optional repeated "all "/"each " pluralizer the early union does not fold.
-        let plural_len = alt((tag::<_, _, OracleError<'_>>("all "), tag("each ")))
-            .parse(after_sep_lower.as_str())
-            .map(|(r, _)| after_sep_lower.len() - r.len())
-            .unwrap_or(0);
+        let plural_len = match leg {
+            TypeUnionLeg::TargetPhrase => alt((tag::<_, _, OracleError<'_>>("all "), tag("each ")))
+                .parse(after_sep_lower.as_str())
+                .map(|(r, _)| after_sep_lower.len() - r.len())
+                .unwrap_or(0),
+            TypeUnionLeg::TypePhrase => 0,
+        };
         let leg_text = &after_sep[plural_len..];
         if !starts_with_type_word(&leg_text.to_lowercase()) {
             break;
         }
-        let (leg, next) = parse_target_with_ctx(leg_text, ctx);
-        acc = merge_or_filters(acc, leg);
+        let (leg_filter, next) = read_type_union_leg(leg_text, ctx, leg);
+        // `parse_type_phrase_folding_with_ctx` is infallible (see its doc): an
+        // unrecognized leg comes back as an EMPTY `TypedFilter`, not `Any`.
+        // Unioning that in would widen the filter to "anything", so an empty
+        // leg ends the fold and stays in the remainder for the caller to judge.
+        //
+        // The guard applies to BOTH leg grammars, which is a strictly narrowing
+        // change for `TypeUnionLeg::TargetPhrase`:
+        // `target_filter_has_meaningful_content` also rejects `Any` and the
+        // non-`Typed` referent filters, so a `parse_target_with_ctx` leg that
+        // falls back to one of those now ENDS the fold and stays in the
+        // remainder, where it previously merged in as an `Or` leg matching
+        // everything. Fail-closed by direction (the caller sees unconsumed text
+        // instead of a silently widened filter), and no corpus mass-target
+        // wording reaches that arm - `coverage-parse-diff` reports exactly one
+        // changed card for this whole change.
+        if !target_filter_has_meaningful_content(&leg_filter) {
+            break;
+        }
+        acc = merge_or_filters(acc, leg_filter);
         rest = next;
     }
     (acc, rest)
+}
+
+/// CR 509.1b + CR 608.2c: [`fold_type_union`] over [`TypeUnionLeg::TypePhrase`]
+/// — the reader for a phrase that is ENTIRELY a filter, such as the text after
+/// "can't be blocked by " / "can't be blocked except by ". Returns the union of
+/// every leg plus whatever text follows the last one.
+///
+/// Like [`parse_type_phrase_folding`] this reader is INFALLIBLE: an
+/// unrecognized phrase comes back as an empty `TypedFilter` plus the whole
+/// input. Callers that must decline unrecognized input go through
+/// [`parse_block_filter_phrase`], which classifies the result.
+pub(crate) fn parse_filter_phrase_union(text: &str) -> (TargetFilter, &str) {
+    fold_type_union(text, &mut ParseContext::default(), TypeUnionLeg::TypePhrase)
+}
+
+/// CR 509.1b: what a blocking-restriction filter phrase turned out to be.
+///
+/// The three arms exist because the three outcomes need three DIFFERENT caller
+/// responses, and conflating any two of them publishes a wrong restriction:
+///
+/// * [`Self::Filter`] - a real blocker constraint; publish it.
+/// * [`Self::Unconstrained`] - the phrase named nothing the filter grammar
+///   recognizes (`TargetFilter::Any`). This is the pre-existing shape every
+///   caller already had a fall-through for, so the caller keeps that
+///   fall-through unchanged.
+/// * [`Self::DroppedDisjunct`] - the phrase printed another "and/or" leg that no
+///   leg grammar could read. The caller MUST fail closed here, and "fail closed"
+///   means `None` for the whole line, not "skip this arm": the `can't be
+///   blocked` dispatch blocks end in a BLANKET `StaticMode::CantBeBlocked`
+///   fallback, so skipping the arm would turn a filter we read only half of into
+///   total unblockability - infinitely WIDER than the printed text, and in
+///   `oracle_static::grammar` with no `Unrecognized` marker, so behind a green
+///   `supported: true`. Narrower-than-printed and wider-than-printed are both
+///   wrong; only declining the line is honest.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum BlockFilterPhrase<'a> {
+    /// A blocker constraint plus the text following its last union leg.
+    Filter {
+        /// The folded union of every leg the phrase printed.
+        filter: TargetFilter,
+        /// Text after the last leg - a duration or gate for the caller's own
+        /// grammar, never a dropped disjunct (that is `DroppedDisjunct`).
+        tail: &'a str,
+    },
+    /// The phrase constrains no blocker at all.
+    Unconstrained,
+    /// A printed "and/or" disjunct the leg grammar could not read.
+    DroppedDisjunct,
+}
+
+impl<'a> BlockFilterPhrase<'a> {
+    /// Classify an already-parsed `(filter, tail)` pair. Shared with the
+    /// `parse_chosen_qualifier_subject` branch, which produces its filter from a
+    /// different reader but needs the same three-way decision.
+    pub(crate) fn from_parts(filter: TargetFilter, tail: &'a str) -> Self {
+        // Checked BEFORE the `Any` arm: a dropped disjunct must fail closed even
+        // when the leg that did parse constrains nothing.
+        if and_or_union_separator(tail).is_some() {
+            return Self::DroppedDisjunct;
+        }
+        if matches!(filter, TargetFilter::Any) {
+            return Self::Unconstrained;
+        }
+        Self::Filter { filter, tail }
+    }
+}
+
+/// CR 509.1b + CR 608.2c: the single reader every "can't be blocked [except] by
+/// <filter>" site uses - [`parse_filter_phrase_union`] plus the one
+/// [`BlockFilterPhrase`] classification, so the accept/decline rule is stated
+/// once instead of once per call site.
+pub(crate) fn parse_block_filter_phrase(text: &str) -> BlockFilterPhrase<'_> {
+    let (filter, tail) = parse_filter_phrase_union(text);
+    BlockFilterPhrase::from_parts(filter, tail)
+}
+
+/// CR 608.2c: byte length of a leading **"and/or"** connector, or `None`.
+///
+/// This is the coverage-honesty half of a union fold: a remainder that still
+/// opens with "and/or" is a printed disjunct no leg grammar could read.
+///
+/// Scoped to the "and/or" spellings on purpose, and the reason is the point of
+/// the matcher: "and/or" only ever joins alternatives in a list, so a remainder
+/// opening with it is PROVABLY a dropped disjunct. The bare `" or "` / `" and "`
+/// / `", "` connectors are ambiguous in exactly this position - they also open
+/// sibling clauses ("can't block **or be blocked by** ...", "creatures with
+/// haste**, where X is** ...") - so declining on them would be a guess, and a
+/// wrong guess there deletes a card that parses correctly today. A trailing
+/// duration or gate (" this turn", " as long as ...", " unless ...") is likewise
+/// a different, pre-existing remainder class each caller already routes to its
+/// own grammar.
+///
+/// Deliberately NOT derived from [`match_mass_union_separator`]'s seven-tag
+/// table even though it overlaps two of its arms: this matcher additionally
+/// accepts the space-less `"and/or "` form, and that table is ordered
+/// longest-match-first, so hoisting a bare arm into it would change what it
+/// matches for every mass-target caller.
+fn and_or_union_separator(rest: &str) -> Option<usize> {
+    // Only a LEADING connector can match, so lowercase a bounded prefix rather
+    // than the whole (possibly sentence-length) remainder. `chars()` never
+    // splits a code point, so the prefix is always valid UTF-8.
+    let lower: String = rest
+        .chars()
+        .take(AND_OR_CONNECTOR_MAX_CHARS)
+        .flat_map(char::to_lowercase)
+        .collect();
+    match_and_or_connector(&lower)
+}
+
+/// Longest "and/or" connector spelling (`", and/or "`) plus slack, in chars.
+const AND_OR_CONNECTOR_MAX_CHARS: usize = 12;
+
+/// The "and/or" connector spellings, over already-lowercased text. Mirrors
+/// [`match_mass_union_separator`]'s shape so the two tables read side by side.
+fn match_and_or_connector(lower: &str) -> Option<usize> {
+    alt((
+        tag::<_, _, OracleError<'_>>(", and/or "),
+        tag(" and/or "),
+        tag("and/or "),
+    ))
+    .parse(lower)
+    .ok()
+    .map(|(tail, _)| lower.len() - tail.len())
 }
 
 /// Context-aware variant of `parse_type_phrase_folding`. Enables relative-player scope
@@ -17712,6 +17912,153 @@ mod tests {
             let (baseline, _) = parse_target(phrase);
             assert_eq!(f, baseline, "mass union changed bare parse for {phrase:?}");
         }
+    }
+
+    /// CR 205.2a (issue #10364): the shared fold's leg-content guard, on the
+    /// `TargetPhrase` arm `parse_mass_type_union` uses. A continuation that
+    /// leads with a recognized type word but parses to NO constraint must end
+    /// the fold and stay in the remainder, never merge in as an `Or` leg that
+    /// matches everything.
+    ///
+    /// Positive reach-guard in the same test: the identical phrase with a
+    /// constraining continuation DOES fold, so the assertion below is the guard
+    /// firing and not the separator scan declining.
+    #[test]
+    fn mass_type_union_leg_guard_rejects_an_unconstraining_continuation() {
+        let mut ctx = ParseContext::default();
+        // "them" is the canonical unrecognized noun: the leg grammar is
+        // infallible and returns an EMPTY `TypedFilter` plus the whole input.
+        let (guarded, rest) = parse_mass_type_union("artifacts and them", &mut ctx);
+        assert_eq!(
+            guarded,
+            TargetFilter::Typed(TypedFilter::new(TypeFilter::Artifact)),
+            "an unconstraining continuation must not join the union"
+        );
+        assert!(
+            !rest.trim().is_empty(),
+            "the rejected continuation must stay in the remainder, got {rest:?}"
+        );
+        let (folded, folded_rest) = parse_mass_type_union("artifacts and creatures", &mut ctx);
+        assert_eq!(
+            folded,
+            TargetFilter::Or {
+                filters: vec![
+                    TargetFilter::Typed(TypedFilter::new(TypeFilter::Artifact)),
+                    TargetFilter::Typed(TypedFilter::creature()),
+                ],
+            },
+            "reach guard: a constraining continuation still folds"
+        );
+        assert_eq!(folded_rest.trim(), "");
+    }
+
+    /// CR 205.2a + CR 608.2c (issue #10364): the `TypePhrase` leg grammar folds a
+    /// union separator that follows a leg's OWN trailing suffix — the position
+    /// the early within-leg union loop runs before and therefore never sees.
+    /// Doorman: "creatures with power 2 or less and/or Walls".
+    #[test]
+    fn filter_phrase_union_folds_a_suffix_then_separator() {
+        let power_le_2 = TargetFilter::Typed(TypedFilter::creature().properties(vec![
+            FilterProp::PtComparison {
+                stat: PtStat::Power,
+                scope: PtValueScope::Current,
+                comparator: Comparator::LE,
+                value: QuantityExpr::Fixed { value: 2 },
+            },
+        ]));
+        let walls = TargetFilter::Typed(TypedFilter::new(TypeFilter::Subtype("Wall".to_string())));
+        for phrase in [
+            "creatures with power 2 or less and/or walls",
+            "creatures with power 2 or less or walls",
+            "creatures with power 2 or less, walls",
+        ] {
+            let (f, rest) = parse_filter_phrase_union(phrase);
+            assert_eq!(
+                f,
+                TargetFilter::Or {
+                    filters: vec![power_le_2.clone(), walls.clone()],
+                },
+                "{phrase}"
+            );
+            assert_eq!(rest.trim(), "", "{phrase} left remainder {rest:?}");
+        }
+    }
+
+    /// The suffix stays bound to the leg it follows: the `Walls` disjunct must
+    /// NOT inherit "power 2 or less". Without this the fold would reproduce the
+    /// mis-binding the within-leg trailing-suffix distributor applies when the
+    /// suffix appears on the LAST leg instead.
+    #[test]
+    fn filter_phrase_union_does_not_distribute_a_left_leg_suffix() {
+        let (f, _) = parse_filter_phrase_union("creatures with power 2 or less and/or walls");
+        let TargetFilter::Or { filters } = f else {
+            panic!("expected a two-leg union, got {f:?}");
+        };
+        let wall_leg = filters
+            .iter()
+            .find(|leg| match leg {
+                TargetFilter::Typed(typed) => typed
+                    .type_filters
+                    .iter()
+                    .any(|t| matches!(t, TypeFilter::Subtype(s) if s == "Wall")),
+                _ => false,
+            })
+            .expect("the Wall disjunct must be present");
+        let TargetFilter::Typed(typed) = wall_leg else {
+            unreachable!("matched a Typed leg above")
+        };
+        assert!(
+            typed.properties.is_empty(),
+            "CR 608.2c: the power suffix precedes the connector, so it binds \
+             only to the left noun; got {:?}",
+            typed.properties
+        );
+    }
+
+    /// A phrase with no continuation must return exactly what the bare leg
+    /// grammar returns — the fold is additive, never a reinterpretation.
+    #[test]
+    fn filter_phrase_union_single_leg_matches_parse_type_phrase_folding() {
+        for phrase in [
+            "walls",
+            "creatures with power 2 or less",
+            "artifacts and/or creatures",
+            "black and/or red creatures",
+            "artifact creatures and/or black creatures",
+            "creatures of that color",
+            "them",
+        ] {
+            let (f, rest) = parse_filter_phrase_union(phrase);
+            let (baseline, baseline_rest) = parse_type_phrase_folding(phrase);
+            assert_eq!(
+                f, baseline,
+                "filter union changed bare parse for {phrase:?}"
+            );
+            assert_eq!(
+                rest, baseline_rest,
+                "filter union changed the remainder for {phrase:?}"
+            );
+        }
+    }
+
+    /// The continuation guard is a TYPE word, not any noun phrase: an unrecognized
+    /// tail stays in the remainder so the caller can decline it rather than being
+    /// silently unioned into a match-anything filter.
+    #[test]
+    fn filter_phrase_union_leaves_a_non_type_continuation_as_remainder() {
+        let (f, rest) = parse_filter_phrase_union("creatures with power 2 or less and blah blah");
+        assert_eq!(
+            f,
+            TargetFilter::Typed(TypedFilter::creature().properties(vec![
+                FilterProp::PtComparison {
+                    stat: PtStat::Power,
+                    scope: PtValueScope::Current,
+                    comparator: Comparator::LE,
+                    value: QuantityExpr::Fixed { value: 2 },
+                },
+            ]))
+        );
+        assert_eq!(rest, " and blah blah");
     }
 
     // ── Feature 1: starts_with_type_word guard ──

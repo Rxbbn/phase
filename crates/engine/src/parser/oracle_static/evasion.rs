@@ -27,7 +27,24 @@ pub(crate) fn classify_block_exception(filter_text: &str) -> BlockExceptionKind 
         BlockExceptionKind::MinBlockers { min }
     } else {
         let normalized = strip_redundant_block_exception_by(trimmed);
-        BlockExceptionKind::Quality(parse_target(&normalized).0)
+        // CR 509.1b + CR 608.2c (issue #10364): the whole phrase after "except
+        // by " is the exception filter, so fold its union legs. `parse_target`
+        // alone closes a leg on its own trailing suffix and never sees a
+        // separator that follows one ("creatures with power 2 or less and/or
+        // Walls"), which would publish only the first disjunct.
+        //
+        // The tail is dropped here exactly as the previous `parse_target(..).0`
+        // dropped it: this function's contract is "classify, always return a
+        // kind", and `BlockExceptionKind` has no decline channel. The fold
+        // strictly shrinks what is dropped; tightening the drop into a decline
+        // would change every caller of `CantBeBlockedExceptBy` and belongs to
+        // its own change.
+        let (filter, _tail) = fold_type_union(
+            &normalized,
+            &mut ParseContext::default(),
+            TypeUnionLeg::TargetPhrase,
+        );
+        BlockExceptionKind::Quality(filter)
     }
 }
 
@@ -820,6 +837,9 @@ pub(crate) fn parse_forced_block_blocker_slot(input: &str) -> Option<(&str, Opti
     let (rest, type_text) = take_until::<_, _, OracleError<'_>>(" able to block ")
         .parse(input)
         .ok()?;
+    // Deliberately NOT routed through the union fold (issue #10364): the
+    // all-consuming remainder guard below already FAILS CLOSED on any unread
+    // tail, union leg included.
     let (filter, filter_remainder) = parse_type_phrase_folding(type_text);
     if !filter_remainder.trim().is_empty() {
         return None; // mis-scoped Some — reject rather than accept a partial filter.
@@ -1823,12 +1843,23 @@ pub(crate) fn cant_be_blocked_mode(clause: &str) -> Option<(StaticMode, Option<S
     // "by <filter>" → CantBeBlockedBy.
     if let Some(filter_text) = nom_tag_lower(rest, rest, " by ") {
         let filter_tp = TextPair::new(filter_text, filter_text);
-        let (filter, remainder) = if let Some(filter) = parse_chosen_qualifier_subject(&filter_tp) {
-            (filter, "")
-        } else {
-            parse_type_phrase_folding(filter_text)
+        // CR 509.1b + CR 608.2c (issue #10364): fold the filter's union legs -
+        // a leg's own trailing suffix ("creatures with power 2 or less and/or
+        // Walls") closes the leg before the leg grammar's early union loop can
+        // see the separator. Whatever survives the fold is still offered to
+        // `parse_compound_cant_be_blocked_condition` as a trailing gate.
+        //
+        // Coverage honesty: `DroppedDisjunct` and `Unconstrained` both decline
+        // here, which this arm already did for an unreadable filter.
+        let phrase = match parse_chosen_qualifier_subject(&filter_tp) {
+            Some(chosen) => BlockFilterPhrase::from_parts(chosen, ""),
+            None => parse_block_filter_phrase(filter_text),
         };
-        if !matches!(filter, TargetFilter::Any) {
+        if let BlockFilterPhrase::Filter {
+            filter,
+            tail: remainder,
+        } = phrase
+        {
             let condition = parse_compound_cant_be_blocked_condition(remainder);
             return Some((StaticMode::CantBeBlockedBy { filter }, condition));
         }

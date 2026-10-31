@@ -574,9 +574,9 @@ pub(crate) fn parse_must_be_blocked_by_quality(input: &str) -> OracleResult<'_, 
 /// CR 509.1c + CR 105.4: Lower a captured "<quality>" span (e.g.
 /// "a Dalek", "an Eldrazi", "a creature of the chosen color") to the blocker
 /// `TargetFilter`. Composes the SAME quality combinators `CantBeBlockedBy` uses
-/// (`parse_chosen_qualifier_subject`, then `parse_type_phrase_folding`). Returns `None`
-/// when the quality fails to constrain the blocker at all — either
-/// `TargetFilter::Any` or the empty `Typed` filter `parse_type_phrase_folding` yields for
+/// (`parse_chosen_qualifier_subject`, then `parse_filter_phrase_union`). Returns
+/// `None` when the quality fails to constrain the blocker at all — either
+/// `TargetFilter::Any` or the empty `Typed` filter the leg grammar yields for
 /// an UNRECOGNIZED noun — so an unparseable requirement is never silently
 /// weakened to "any blocker satisfies".
 fn must_be_blocked_quality_to_filter(quality: &str) -> Option<TargetFilter> {
@@ -586,8 +586,22 @@ fn must_be_blocked_quality_to_filter(quality: &str) -> Option<TargetFilter> {
     // even when the caller passes mixed-case input (e.g. a direct unit test).
     let quality_lower = quality.to_lowercase();
     let quality_tp = TextPair::new(quality, &quality_lower);
+    // CR 509.1c + CR 608.2c (issue #10364): the captured span is a filter and
+    // nothing else, so read it with the same union-folding reader the CR 509.1b
+    // restriction path uses - a separator that follows the quality's own
+    // trailing suffix ("Walls and/or creatures with power 2 or less") is
+    // invisible to the leg grammar's early union loop.
+    //
+    // KNOWN GAP, stated because the example above is deliberately article-LESS:
+    // `fold_type_union`'s continuation guard is `starts_with_type_word`, which
+    // has no article arm, and the qualities THIS requirement grammar captures
+    // are article-led ("a Dalek", "an Eldrazi"). A second disjunct spelled
+    // "... and/or a Wall" therefore stays in the remainder and is declined by
+    // `filter_constrains_blocker` below - honest, but unsupported. Folding it
+    // would mean composing `oracle_target::fold_article_led_type_union` into the
+    // continuation guard; no printed card needs that yet.
     let filter = parse_chosen_qualifier_subject(&quality_tp).unwrap_or_else(|| {
-        let (f, _) = parse_type_phrase_folding(&quality_lower);
+        let (f, _) = parse_filter_phrase_union(&quality_lower);
         f
     });
     filter_constrains_blocker(&filter).then_some(filter)
@@ -1037,11 +1051,24 @@ pub(crate) fn parse_enchanted_equipped_predicate(
             // CR 105.4 + CR 608.2c (issue #327): see parallel comment in
             // `parse_static_line_inner`'s CantBeBlockedBy branch.
             let filter_text_tp = TextPair::new(filter_text, filter_text);
-            let filter = parse_chosen_qualifier_subject(&filter_text_tp).unwrap_or_else(|| {
-                let (f, _) = parse_type_phrase_folding(filter_text);
-                f
-            });
-            if !matches!(filter, TargetFilter::Any) {
+            // CR 509.1b + CR 608.2c (issue #10364): the tail after "by " is the
+            // whole blocker filter, so fold its union legs - a leg's own trailing
+            // suffix ("creatures with power 2 or less and/or Walls") closes the
+            // leg before the leg grammar's early union loop can see the
+            // separator.
+            let phrase = match parse_chosen_qualifier_subject(&filter_text_tp) {
+                Some(chosen) => BlockFilterPhrase::from_parts(chosen, ""),
+                None => parse_block_filter_phrase(filter_text),
+            };
+            // Coverage honesty, and it MUST be a `return`, not a skipped arm:
+            // the blanket `CantBeBlocked` form below is this function's
+            // fall-through, and it carries no `Unrecognized` marker when the line
+            // has no gate - so skipping the arm would publish total
+            // unblockability behind a green `supported: true`.
+            if matches!(phrase, BlockFilterPhrase::DroppedDisjunct) {
+                return Vec::new();
+            }
+            if let BlockFilterPhrase::Filter { filter, .. } = phrase {
                 let mut def = StaticDefinition::new(StaticMode::CantBeBlockedBy { filter })
                     .affected(affected.clone())
                     .description(description.to_string());
