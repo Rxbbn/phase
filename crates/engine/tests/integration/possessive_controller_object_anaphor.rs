@@ -284,11 +284,14 @@ fn a_blocker_that_already_left_sacrifices_nothing_and_makes_no_wall() {
 /// is a NEW object the instruction may not touch.
 ///
 /// This is the currency guard on the referent the fix introduces. A
-/// `ParentTarget` that an ability PINNED resolves through
-/// `ResolvedAbility::live_object_targets`, which applies `target_pin_is_current`
-/// — so the blinked-back creature is dropped, nothing is sacrificed, and the
-/// gated Wall is not created. (The unpinned fallback rung of
-/// `targeting::resolved_targets` carries no such check, which is why
+/// `ParentTarget` an ability PINNED is checked against its recorded
+/// `target_incarnations`: this delayed instruction pins exactly one object, so
+/// `effects/sacrifice.rs`'s `pinned_object_targets_all_stale` early return
+/// fires first and `live_object_targets` is never reached on this path, though
+/// both apply the same `target_pin_is_current`. Either way the blinked-back
+/// creature is dropped, nothing is sacrificed, and the gated Wall is not
+/// created. (The unpinned fallback rung of `targeting::resolved_targets`
+/// carries no such check, which is why
 /// `subject::subject_possessive_object_antecedent` refuses to pin a subject
 /// whose runtime referent would degrade to it.)
 #[test]

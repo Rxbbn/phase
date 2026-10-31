@@ -2896,10 +2896,18 @@ pub(super) fn subject_player_antecedent(subject: &SubjectPhraseAst) -> Option<Co
 /// The subject must resolve to one of those two actor filters AND must carry
 /// `PlayerAnaphor::ItsController`, the discriminant the four subject arms that
 /// print the possessive anaphor stamp ("its controller", "their controller",
-/// "[the|that] `<noun>`'s controller", plus their `may` forms). The same
-/// predicate gates the chain-spanning antecedent in `oracle_effect::mod`'s
-/// chunk loop, deliberately: the two seams must agree about what counts as a
-/// printed possessor.
+/// "[the|that] `<noun>`'s controller", plus their `may` forms). The
+/// chain-spanning antecedent in `oracle_effect::mod`'s chunk loop shares that
+/// rung — deliberately, so the two seams agree on the shapes they both see —
+/// but the predicates are NOT equal: the arming rung additionally admits any
+/// `is_optional` subject (a base behaviour it must not narrow) and never
+/// admits `ParentTargetOwner`, which has its own single-shot local.
+///
+/// The discriminant is a PROXY, and the thing it stands for is what makes the
+/// pin sound: every subject it accepts must resolve to a referent that carries
+/// a currency guard. `only_a_pinned_referents_possessor_is_pinnable` is the
+/// tripwire for the day that proxy stops holding — read it before widening
+/// this predicate.
 ///
 /// Requiring the discriminant is what keeps this pin off referents that carry
 /// no CR 400.7 guard. `ParentTarget` resolves through a ladder
@@ -2917,9 +2925,12 @@ pub(super) fn subject_player_antecedent(subject: &SubjectPhraseAst) -> Option<Co
 /// printed `SelfRef` subject had correctly found nothing. It is left on that
 /// guarded referent (an unchanged, pre-existing misparse) rather than moved
 /// onto an unguarded one. Basalt Golem is unaffected either way: its DELAYED
-/// ability snapshots the blocker into `ability.targets`, so resolution runs
-/// through `ResolvedAbility::live_object_targets`, which applies
-/// `target_pin_is_current`.
+/// ability snapshots the blocker into `ability.targets`, so its referent is
+/// pin-checked against `ResolvedAbility::target_incarnations` — for a
+/// single-object pin the early return at `effects/sacrifice.rs`'s
+/// `pinned_object_targets_all_stale` fires first, and
+/// `ResolvedAbility::live_object_targets` applies the same
+/// `target_pin_is_current` on the paths that reach it.
 ///
 /// # Why the measured blast radius is one card (Basalt Golem)
 ///
@@ -2945,12 +2956,14 @@ pub(super) fn subject_player_antecedent(subject: &SubjectPhraseAst) -> Option<Co
 ///   produces `TargetFilter::SourceController`, never either parent-target
 ///   actor, so it cannot reach this function at all: its possessor IS the
 ///   ability's own source.
-/// * The BARE player anaphors — "that player" / "the player"
-///   (`PlayerAnaphor::ThatPlayer`) and "they" / "they may" / "they each"
-///   (`PlayerAnaphor::They`) — print no possessor. They RE-STATE an antecedent
-///   an earlier clause introduced rather than introducing one, so pinning their
+/// * The BARE player anaphors — "that player" / "the player", which stamp
+///   `PlayerAnaphor::ThatPlayer`, and "they" / "they may" / "they each", whose
+///   arm stamps nothing — print no possessor. They RE-STATE an antecedent an
+///   earlier clause introduced rather than introducing one, so pinning their
 ///   predicate's pronoun would override a nearer binding the trigger condition
-///   or the chain already established.
+///   or the chain already established. Both are refused by the positive
+///   requirement above; neither needed a blacklist entry, which is why the
+///   predicate reads one variant instead of enumerating the rest.
 /// * Three routes print a possessor, or none, while stamping no discriminant,
 ///   and are excluded with it: the generic `subject_filter_application` route a
 ///   `parse_target`-recognized possessor takes (Reality Acid, above), the
@@ -4109,14 +4122,7 @@ fn parse_subject_application_for(
             multi_target: None,
             inherits_parent: false,
             is_optional,
-            // CR 608.2c: record WHICH player anaphor this phrase printed, as the
-            // "that player" arm does. The filter alone cannot say it: a bare
-            // "they" resolves to whatever antecedent is live — including
-            // `ParentTargetController`, which a printed possessive also
-            // produces — and a consumer that must tell "introduced here" from
-            // "re-stated here" (`subject_possessive_object_antecedent`) has
-            // only this discriminant to read.
-            player_anaphor: Some(PlayerAnaphor::They),
+            player_anaphor: None,
         });
     }
 
@@ -8908,46 +8914,80 @@ mod tests {
         }
     }
 
-    /// CR 608.2c: a bare "they" subject records WHICH anaphor it printed, so a
-    /// consumer can tell a phrase that re-states the live antecedent from one
-    /// that introduces a possessor. Its resolved filter cannot carry that: under
-    /// an armed chain antecedent the pronoun resolves to the very
-    /// `ParentTargetController` a printed possessive also produces, which is the
-    /// collision `subject_possessive_object_antecedent` must refuse.
+    /// CR 400.7 + CR 608.2c: TRIPWIRE for the safety property
+    /// [`subject_possessive_object_antecedent`] rests on.
+    ///
+    /// The pin is sound only because every subject phrase it accepts resolves to
+    /// a referent that carries a currency guard. It enforces that by requiring
+    /// `PlayerAnaphor::ItsController`, which is a PROXY: the real property is
+    /// "this possessor's runtime referent is pinned, not the unguarded
+    /// source-fallback rung of `targeting::resolved_targets`". The proxy holds
+    /// today because the one printed possessor whose referent is unpinned —
+    /// Reality Acid's attached-host "enchanted permanent's controller", whose
+    /// leaves-the-battlefield trigger pins nothing — reaches
+    /// `ParentTargetController` through `oracle_target`'s verbatim
+    /// `"enchanted permanent's controller"` match and the generic
+    /// `subject_filter_application`, neither of which stamps the discriminant.
+    ///
+    /// That coupling is the hazard this test exists to catch. CLAUDE.md
+    /// prohibits that verbatim match, so a later round is LIKELY to replace it
+    /// with a composable parse; if the replacement routes through the
+    /// `[the|that] <noun>'s controller` subject arm, which DOES stamp
+    /// `ItsController`, Reality Acid becomes pinnable and its sacrifice silently
+    /// reacquires the CR 400.7 violation this predicate was written to remove —
+    /// an Aura destroyed, blinked back in response, and then sacrificed as a new
+    /// object. If this row goes red, the predicate needs the real property
+    /// (a pinned referent), not a wider proxy.
+    ///
+    /// Asserted over PARSED phrases, not hand-built fixtures, because the
+    /// coupling lives in which arm claims each phrase.
     #[test]
-    fn a_bare_they_subject_records_the_pronoun_it_printed() {
-        for phrase in ["they", "they may", "they each"] {
+    fn only_a_pinned_referents_possessor_is_pinnable() {
+        // Every phrase here resolves to the same actor filter; what differs is
+        // whether the arm that claimed it printed the possessive anaphor.
+        for (phrase, pinnable) in [
+            // Printed possessive anaphors, referent pinned by the chain.
+            ("its controller", true),
+            ("their controller", true),
+            ("that creature's controller", true),
+            ("the permanent's controller", true),
+            // Reality Acid: prints a possessor, but its referent is UNPINNED.
+            ("enchanted permanent's controller", false),
+            // Bare player anaphors: print no possessor at all.
+            ("that player", false),
+            ("they", false),
+        ] {
             let mut ctx = ParseContext {
                 relative_player_scope: Some(ControllerRef::ParentTargetController),
                 ..ParseContext::default()
             };
             let application = parse_subject_application(phrase, &mut ctx)
                 .unwrap_or_else(|| panic!("{phrase:?} is a player subject"));
-            // Reach guard: the collision is real — this phrase resolves to the
-            // same filter a printed possessive produces.
+            // Reach guard: the distinction is real — every phrase here lands on
+            // the same actor filter, so `affected` alone cannot separate them.
             assert_eq!(
                 application.affected,
                 TargetFilter::ParentTargetController,
-                "{phrase:?} resolves through the armed chain antecedent"
+                "{phrase:?} must reach the actor filter for this row to mean anything"
             );
+            let antecedent = subject_possessive_object_antecedent(&SubjectPhraseAst {
+                affected: Some(application.affected.clone()),
+                target: application.target.clone(),
+                multi_target: application.multi_target.clone(),
+                inherits_parent: application.inherits_parent,
+                is_optional: application.is_optional,
+                player_anaphor: application.player_anaphor,
+            });
             assert_eq!(
-                application.player_anaphor,
-                Some(PlayerAnaphor::They),
-                "{phrase:?} must record its pronoun, or the pin below cannot refuse it"
+                antecedent.is_some(),
+                pinnable,
+                "{phrase:?}: pinnable should be {pinnable}, got {antecedent:?} \
+                 (player_anaphor = {:?})",
+                application.player_anaphor
             );
-            assert_eq!(
-                subject_possessive_object_antecedent(&SubjectPhraseAst {
-                    affected: Some(application.affected.clone()),
-                    target: application.target.clone(),
-                    multi_target: application.multi_target.clone(),
-                    inherits_parent: application.inherits_parent,
-                    is_optional: application.is_optional,
-                    player_anaphor: application.player_anaphor,
-                }),
-                None,
-                "{phrase:?} re-states the antecedent, so its predicate's pronoun keeps the \
-                 nearer binding"
-            );
+            if pinnable {
+                assert_eq!(antecedent, Some(TargetFilter::ParentTarget));
+            }
         }
     }
 
@@ -9002,6 +9042,8 @@ mod tests {
             "CR 608.2c: each announced object is the antecedent in turn, so no single \
              ParentTarget can stand for them"
         );
+        // Every non-`ItsController` variant is refused, whether a subject arm
+        // stamps it today (`ThatPlayer`) or not (`They`).
         for pronoun in [PlayerAnaphor::ThatPlayer, PlayerAnaphor::They] {
             assert_eq!(
                 subject_possessive_object_antecedent(&SubjectPhraseAst {

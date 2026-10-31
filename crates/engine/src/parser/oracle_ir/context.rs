@@ -1091,6 +1091,19 @@ impl ParseContext {
     /// `object_pronoun_ref` names and is only meaningful for the pin it
     /// travelled with (see its own doc: "Set only together with the matching
     /// pin"), so a nearer pin must not be read through the outer pin's label.
+    ///
+    /// The clearing FAILS OPEN, and knowingly: a reader that tests the label
+    /// AND the pin together (`oracle_effect::mod`'s
+    /// `subject_is_unbindable_damage_source`) has its `BlockedAttacker` leg
+    /// forced false inside the span while its `ParentTarget` leg is true by
+    /// construction, so a nested `ParentTarget` damage subject under a bare
+    /// "becomes blocked" trigger would lose its honest `Effect::unimplemented`
+    /// rather than gain a wrong binding. Clearing is still right — the span's
+    /// pin is a DIFFERENT referent and no `ConditionObjectAntecedent` variant
+    /// describes it — and the open direction is unreachable today, because that
+    /// reader also requires the subject itself to be `ParentTarget`, which a
+    /// possessive-player subject never is. A variant naming the possessor is
+    /// what would close it.
     pub fn with_object_pronoun_ref<R>(
         &mut self,
         antecedent: TargetFilter,

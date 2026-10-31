@@ -50069,10 +50069,12 @@ fn parse_effect_chain_ir_body(
         // retained `is_optional` rung, exactly as it did at base — that rung is
         // not narrowed here.
         //
-        // The `ItsController` rung is the SAME predicate the clause-local pin
-        // (`subject::subject_possessive_object_antecedent`) requires, and that
-        // agreement is deliberate: both seams must answer "did this subject
-        // PRINT a possessor" the same way, or one of them binds an anaphor on
+        // The `ItsController` rung is the SAME RUNG the clause-local pin
+        // (`subject::subject_possessive_object_antecedent`) requires — not the
+        // same predicate: this one also admits any `is_optional` subject and
+        // never admits `ParentTargetOwner` (both stated below). Sharing the rung
+        // is deliberate: on the shapes both seams see they must answer "did this
+        // subject PRINT a possessor" the same way, or one binds an anaphor on
         // evidence the other rejects. Two routes reach `ParentTargetController`
         // while stamping no discriminant and so arm nothing here — an
         // attached-host subject ("enchanted permanent's controller") and the
