@@ -439,7 +439,7 @@ fn put_on_top_of_owners_libraries_then_those_players_shuffle_shuffles_once() {
     let gomazoa = scenario
         .add_creature_from_oracle(
             P0,
-            "Gomazoa",
+            "Gomazoa Stand-In",
             0,
             3,
             "{T}: Put this creature and each creature it's blocking on top of their owners' libraries, then those players shuffle.",
@@ -471,7 +471,7 @@ fn two_shuffle_instructions_in_one_spell_shuffle_each_owner_once() {
     let parting = scenario
         .add_spell_to_hand_from_oracle(
             P0,
-            "Cathartic Parting",
+            "Parting Stand-In",
             false,
             "The owner of target artifact or enchantment an opponent controls shuffles it into their library. You may shuffle up to four target cards from your graveyard into your library.",
         )

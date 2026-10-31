@@ -9219,11 +9219,21 @@ fn publish_effect_zone_choice_tracked_set(
     let active_continuation = state
         .active_ability_continuation()
         .map(|continuation| (*continuation.chain).clone());
+    // CR 701.24a + CR 400.3: only a choice that moves cards INTO a library has owners of
+    // a shuffled population; any other interactive choice ahead of the terminal shuffle
+    // (exile, sacrifice, tap, cast) must not publish its owners as subjects.
+    let moves_into_library = match effect_kind {
+        EffectKind::ChangeZone => destination == Some(Zone::Library),
+        EffectKind::PutAtLibraryPosition => true,
+        _ => false,
+    };
     if let Some(continuation) = active_continuation {
-        if matches!(
-            effects::tracked_set_publication_mode(&continuation),
-            effects::TrackedSetPublicationMode::Prospective { .. }
-        ) {
+        if moves_into_library
+            && matches!(
+                effects::tracked_set_publication_mode(&continuation),
+                effects::TrackedSetPublicationMode::Prospective { .. }
+            )
+        {
             let participants =
                 effects::prospective_subject_participants(state, &continuation, chosen);
             effects::publish_tracked_set_for_resolution(

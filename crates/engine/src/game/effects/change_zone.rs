@@ -606,10 +606,20 @@ fn append_effect_resolved_after_counter_pause(
 /// single randomization per owner: it still runs when a self-referential or
 /// optionally-targeted move finds nothing to move (CR 701.24c-d, via
 /// `publish_named_owner_library_subjects`; the other no-op early returns publish
-/// nothing and so shuffle nobody) and honors "can't shuffle". This is the single-object analogue of
-/// `MassLibraryShuffleMode::TerminalShuffle`; the marker is parser-stamped data on
-/// the chain's terminal `Shuffle`, found by the same chain scan that publishes the
-/// prospective owner population (`tracked_set_publication_mode`).
+/// nothing and so shuffle nobody) and honors "can't shuffle".
+///
+/// Why the marker lives on the terminal `Shuffle` rather than being inferred here from
+/// `ability.sub_ability`: it does double duty. It is the deferral marker AND the source of
+/// the subject population (the owners the move published), which the runtime needs
+/// regardless; it reuses the `MassLibraryShuffleMode::TerminalShuffle` vocabulary; and it
+/// makes the change diffable in the card-data export. The parser stamps it where it
+/// synthesizes the `Shuffle` from one clause (`with_shuffle_sub_ability`) and, by a
+/// structural match on the lowered AST, where a bare `Shuffle` directly follows a move
+/// into a library (`scope_shuffle_after_library_move`). Predicting the shuffle's subject
+/// at move time instead fails (Beacon of Destruction's base `ParentTargetOwner` resolves
+/// to the damage target's owner), and deduplicating on events would mis-count CR 701.24f
+/// shuffles. Single-object analogue of the mass form; the chain scan is
+/// `tracked_set_publication_mode`.
 fn terminal_shuffle_member_placement(
     ability: &ResolvedAbility,
     destination: Zone,
