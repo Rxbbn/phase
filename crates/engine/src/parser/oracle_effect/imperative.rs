@@ -10887,10 +10887,11 @@ pub(super) fn with_shuffle_sub_ability(mut effect: Effect) -> ParsedEffectClause
 
 /// CR 701.24a + CR 701.24c-e: The terminal `Shuffle` of a compound "move into
 /// owners' libraries, then shuffle" instruction, scoped to the owners of the exact
-/// prospective subject population. Single authority for every producer of the
-/// compound (imperative clauses and the "shuffle it into its owner's library
-/// instead" replacement outcome) so the move's chain-scope detection and the
-/// shuffle's own subject stay in sync.
+/// prospective subject population. Single authority for the `Shuffle` node of every
+/// parser-built compound (imperative clauses and the "shuffle it into its owner's
+/// library instead" replacement outcome); `scope_shuffle_after_library_move` stamps
+/// the same scope on a separately parsed `Shuffle`, so the move's chain-scope
+/// detection and the shuffle's own subject stay in sync.
 ///
 /// `target` is the clause's own owner anaphor. A `ScopedPlayer` shuffle (the mass
 /// form) is fanned out per owner by the chain executor; any other anaphor

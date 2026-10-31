@@ -1,5 +1,5 @@
 use crate::types::ability::{
-    Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter, TargetRef,
+    Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter, TargetRef, ThisWayCause,
 };
 use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
@@ -98,23 +98,43 @@ pub fn resolve(
 }
 
 /// CR 701.24c-e + CR 400.3: Shuffle the library of each owner in the exact
-/// prospective subject population the preceding move published, in APNAP order,
-/// once each. Honors `PlayerFilter` scope semantics through the same member
-/// authority the chain executor's fan-out uses.
+/// prospective subject population the preceding move published during THIS
+/// resolution, in APNAP order, once each.
+///
+/// The population is read from the resolution's own chain set
+/// (`chain_tracked_set_id`, reset at every depth-0 resolution), never from "the
+/// newest set in the game": a terminal shuffle that no move published for (a
+/// replacement redirect, a move that returned early) shuffles nobody rather than
+/// whoever an earlier resolution left behind. Reading the set CLOSES it — the next
+/// shuffle-into-library instruction in the same chain (Cathartic Parting's second
+/// clause) publishes and consumes a population of its own instead of re-shuffling
+/// the first instruction's owners.
 fn resolve_owner_population(
     state: &mut GameState,
     ability: &ResolvedAbility,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
-    let Some(scope) = ability.player_scope.as_ref() else {
-        return Ok(());
-    };
+    let published: Vec<PlayerId> = state
+        .chain_tracked_set_id
+        .and_then(|set_id| state.tracked_set_participants.get(&set_id))
+        .map(|ledger| {
+            ledger
+                .iter()
+                .filter(|(_, cause)| *cause == ThisWayCause::OwnerLibraryShuffleSubject)
+                .map(|(player, _)| *player)
+                .collect()
+        })
+        .unwrap_or_default();
+    state.chain_tracked_set_id = None;
     let apnap = crate::game::players::apnap_order_from(
         state,
         ability.starting_with.clone(),
         ability.controller,
     );
-    for owner in super::player_scope_members(state, scope, ability, apnap) {
+    for owner in apnap
+        .into_iter()
+        .filter(|player| published.contains(player))
+    {
         shuffle_player(state, ability, owner, events)?;
     }
     Ok(())

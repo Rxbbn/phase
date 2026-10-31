@@ -598,14 +598,16 @@ fn append_effect_resolved_after_counter_pause(
 
 /// CR 701.24a + CR 701.24c: A move into a library whose chain carries the
 /// terminal owner-library `Shuffle` (see `is_owner_library_shuffle_scope`) is the
-/// move component of ONE shuffle instruction. The zone-delivery tail's
-/// per-object auto-shuffle convention would randomize the same library a second
-/// time (CR 701.24f: only simultaneous effects multiply shuffles), so the member
-/// lands at a transient bottom position and the terminal `Shuffle` — which
-/// still runs when no member moves (CR 701.24c-d) and honors "can't shuffle" —
-/// owns the single randomization per owner. This is the single-object analogue of
-/// `MassLibraryShuffleMode::TerminalShuffle`; the marker is parser-stamped data on the
-/// chain's terminal `Shuffle`, found by the same chain scan that publishes the
+/// move component of ONE shuffle instruction (CR 701.24a: to shuffle is to
+/// randomize the library). The zone-delivery tail's per-object auto-shuffle
+/// convention would randomize the same library a second time — a second
+/// `ShuffledLibrary` event, which CR 701.24f lets shuffle watchers count — so the
+/// member lands at a transient bottom position and the terminal `Shuffle` owns the
+/// single randomization per owner: it still runs when the move finds nothing to
+/// move (CR 701.24c-d, via `publish_named_owner_library_subjects`) and honors
+/// "can't shuffle". This is the single-object analogue of
+/// `MassLibraryShuffleMode::TerminalShuffle`; the marker is parser-stamped data on
+/// the chain's terminal `Shuffle`, found by the same chain scan that publishes the
 /// prospective owner population (`tracked_set_publication_mode`).
 fn terminal_shuffle_member_placement(
     ability: &ResolvedAbility,
@@ -644,6 +646,7 @@ fn publish_named_owner_library_subjects(
     state: &mut GameState,
     ability: &ResolvedAbility,
     target_filter: &TargetFilter,
+    destination: Zone,
 ) {
     let named: Vec<ObjectId> = if matches!(target_filter, TargetFilter::SelfRef) {
         vec![ability.source_id]
@@ -660,7 +663,22 @@ fn publish_named_owner_library_subjects(
     .into_iter()
     .filter(|id| state.objects.contains_key(id))
     .collect();
-    publish_finalized_owner_library_subjects(state, ability, &named);
+    publish_library_move_subjects(state, ability, destination, &named);
+}
+
+/// CR 701.24a + CR 400.3: only a move INTO a library has "owners of the shuffled
+/// population"; a move to any other zone in the same chain (the exile of a countered
+/// spell ahead of a "you may shuffle ... into your library" rider) is not a subject of
+/// the terminal owner-library `Shuffle` and must not publish its owner as one.
+fn publish_library_move_subjects(
+    state: &mut GameState,
+    ability: &ResolvedAbility,
+    destination: Zone,
+    objects: &[ObjectId],
+) {
+    if destination == Zone::Library {
+        publish_finalized_owner_library_subjects(state, ability, objects);
+    }
 }
 
 pub(super) fn publish_finalized_owner_library_subjects(
@@ -1090,7 +1108,7 @@ pub fn resolve(
         // CR 701.24c-e + CR 400.3: freeze the prospective owner population
         // after target legality is known and before any replacement can redirect
         // a member away from the library.
-        publish_finalized_owner_library_subjects(state, ability, &targeted_objects);
+        publish_library_move_subjects(state, ability, dest_zone, &targeted_objects);
     }
 
     if targeted_objects.is_empty() {
@@ -1109,7 +1127,7 @@ pub fn resolve(
             && !matches!(ability.target_choice_timing, TargetChoiceTiming::Resolution)
         {
             // CR 701.24d: a shuffled set with no objects still shuffles its owner.
-            publish_named_owner_library_subjects(state, ability, target_filter);
+            publish_named_owner_library_subjects(state, ability, target_filter, dest_zone);
             events.push(GameEvent::EffectResolved {
                 kind: EffectKind::from(&ability.effect),
                 source_id: ability.source_id,
@@ -1125,7 +1143,7 @@ pub fn resolve(
         if matches!(target_filter, TargetFilter::SelfRef) && !ability.self_ref_is_current(state) {
             // CR 701.24c: the source left the zone it was expected in, but the
             // instruction still shuffles its owner's library.
-            publish_named_owner_library_subjects(state, ability, target_filter);
+            publish_named_owner_library_subjects(state, ability, target_filter, dest_zone);
             events.push(GameEvent::EffectResolved {
                 kind: EffectKind::from(&ability.effect),
                 source_id: ability.source_id,
@@ -1247,7 +1265,7 @@ pub fn resolve(
         );
         // CR 701.24d-e: retain an explicitly designated typed player even when
         // the source zone supplies zero eligible cards.
-        publish_finalized_owner_library_subjects(state, ability, &[]);
+        publish_library_move_subjects(state, ability, dest_zone, &[]);
 
         let (choice_count, min_count, choice_up_to) =
             resolution_choice_cardinality(state, ability, eligible.len(), up_to);
@@ -1287,7 +1305,7 @@ pub fn resolve(
                 .draw(RandomDraw::Outcome)
                 .random_range(0..eligible.len());
             let chosen = eligible[index];
-            publish_finalized_owner_library_subjects(state, ability, &[chosen]);
+            publish_library_move_subjects(state, ability, dest_zone, &[chosen]);
             capture_devour_snapshot_before_single_entry(state, chosen, dest_zone);
             // CR 614.12: resolve the chosen object's gated entry counters and
             // tapped/attacking riders before it moves.
@@ -1364,7 +1382,7 @@ pub fn resolve(
 
         if eligible.len() == 1 && !choice_up_to && choice_count == 1 {
             let chosen = eligible[0];
-            publish_finalized_owner_library_subjects(state, ability, &[chosen]);
+            publish_library_move_subjects(state, ability, dest_zone, &[chosen]);
             capture_devour_snapshot_before_single_entry(state, chosen, dest_zone);
             // CR 614.12: resolve the chosen object's gated entry counters and
             // tapped/attacking riders before it moves.
@@ -3535,6 +3553,183 @@ mod tests {
 
         assert_eq!(state.objects[&card].zone, Zone::Library, "reach guard");
         assert_eq!(library_shuffle_count(&events), 1);
+    }
+
+    /// The terminal owner-library `Shuffle` the parser stamps on a compound shuffle.
+    fn terminal_owner_shuffle(source: ObjectId) -> ResolvedAbility {
+        let mut shuffle = ResolvedAbility::new(
+            Effect::Shuffle {
+                target: TargetFilter::ParentTargetOwner,
+            },
+            vec![],
+            source,
+            PlayerId(0),
+        );
+        shuffle.player_scope = Some(PlayerFilter::TrackedSetPossessor {
+            relation: crate::types::ability::PlayerRelation::All,
+            possession: crate::types::ability::PossessionAxis::Owner,
+            filter: TargetFilter::Any,
+            caused_by: Some(ThisWayCause::OwnerLibraryShuffleSubject),
+        });
+        shuffle
+    }
+
+    fn move_to(
+        destination: Zone,
+        target: TargetFilter,
+        targets: Vec<TargetRef>,
+        source: ObjectId,
+    ) -> ResolvedAbility {
+        ResolvedAbility::new(
+            Effect::ChangeZone {
+                origin: None,
+                destination,
+                target,
+                owner_library: true,
+                enter_transformed: false,
+                enters_under: None,
+                enter_tapped: EtbTapState::Unspecified,
+                enters_attacking: false,
+                up_to: false,
+                enter_with_counters: vec![],
+                conditional_enter_with_counters: vec![],
+                face_down_profile: None,
+                enters_modified_if: None,
+            },
+            targets,
+            source,
+            PlayerId(0),
+        )
+    }
+
+    fn shuffles_of(events: &[GameEvent], player: PlayerId) -> usize {
+        events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    GameEvent::PlayerPerformedAction {
+                        player_id,
+                        action: crate::types::events::PlayerActionKind::ShuffledLibrary,
+                        ..
+                    } if *player_id == player
+                )
+            })
+            .count()
+    }
+
+    /// CR 701.24a + CR 400.3: only a move INTO a library has owners of a shuffled
+    /// population. An exile ahead of a "shuffle ... into your library" rider (Devious
+    /// Cover-Up exiling the countered spell) must not publish the exiled object's owner
+    /// as a subject of the terminal shuffle, or the opponent's library would be shuffled.
+    #[test]
+    fn a_non_library_move_ahead_of_the_instruction_is_not_a_shuffle_subject() {
+        let mut state = GameState::new_two_player(42);
+        for owner in [PlayerId(0), PlayerId(1)] {
+            create_object(
+                &mut state,
+                CardId(10 + u64::from(owner.0)),
+                owner,
+                "Library Card".to_string(),
+                Zone::Library,
+            );
+        }
+        let exiled = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Countered Spell".to_string(),
+            Zone::Graveyard,
+        );
+        let shuffled = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Shuffled Card".to_string(),
+            Zone::Graveyard,
+        );
+        let chain = move_to(
+            Zone::Exile,
+            TargetFilter::Any,
+            vec![TargetRef::Object(exiled)],
+            ObjectId(900),
+        )
+        .sub_ability(
+            move_to(
+                Zone::Library,
+                TargetFilter::Any,
+                vec![TargetRef::Object(shuffled)],
+                ObjectId(900),
+            )
+            .sub_ability(terminal_owner_shuffle(ObjectId(900))),
+        );
+
+        let mut events = Vec::new();
+        super::super::resolve_ability_chain(&mut state, &chain, &mut events, 0)
+            .expect("chain resolves");
+
+        // Reach guards: both moves happened.
+        assert_eq!(state.objects[&exiled].zone, Zone::Exile);
+        assert_eq!(state.objects[&shuffled].zone, Zone::Library);
+        assert_eq!(shuffles_of(&events, PlayerId(0)), 1, "{events:?}");
+        assert_eq!(shuffles_of(&events, PlayerId(1)), 0, "{events:?}");
+    }
+
+    /// CR 701.24a: two shuffle-into-library instructions in one chain (Cathartic
+    /// Parting) each shuffle only the owners of their own moves — the second must not
+    /// re-shuffle the first instruction's owner.
+    #[test]
+    fn a_second_instruction_in_a_chain_shuffles_only_its_own_owners() {
+        let mut state = GameState::new_two_player(42);
+        for owner in [PlayerId(0), PlayerId(1)] {
+            create_object(
+                &mut state,
+                CardId(10 + u64::from(owner.0)),
+                owner,
+                "Library Card".to_string(),
+                Zone::Library,
+            );
+        }
+        let theirs = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Their Card".to_string(),
+            Zone::Graveyard,
+        );
+        let mine = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "My Card".to_string(),
+            Zone::Graveyard,
+        );
+        let chain = move_to(
+            Zone::Library,
+            TargetFilter::Any,
+            vec![TargetRef::Object(theirs)],
+            ObjectId(900),
+        )
+        .sub_ability(
+            terminal_owner_shuffle(ObjectId(900)).sub_ability(
+                move_to(
+                    Zone::Library,
+                    TargetFilter::Any,
+                    vec![TargetRef::Object(mine)],
+                    ObjectId(900),
+                )
+                .sub_ability(terminal_owner_shuffle(ObjectId(900))),
+            ),
+        );
+
+        let mut events = Vec::new();
+        super::super::resolve_ability_chain(&mut state, &chain, &mut events, 0)
+            .expect("chain resolves");
+
+        assert_eq!(state.objects[&theirs].zone, Zone::Library, "reach guard");
+        assert_eq!(state.objects[&mine].zone, Zone::Library, "reach guard");
+        assert_eq!(shuffles_of(&events, PlayerId(1)), 1, "{events:?}");
+        assert_eq!(shuffles_of(&events, PlayerId(0)), 1, "{events:?}");
     }
 
     fn make_hand_choice_ability(up_to: bool) -> ResolvedAbility {

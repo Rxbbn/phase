@@ -5,9 +5,9 @@
 //! instruction. The parser lowers it to a move into the library followed by a
 //! terminal `Shuffle`; the zone pipeline also randomizes a placement-less library
 //! delivery. The two must not both fire: every affected library is shuffled exactly
-//! once per instruction (CR 701.24f — only simultaneous *effects* multiply shuffles),
-//! because each shuffle is an observable event (Cosi's Trickster-style triggers, the
-//! rules journal).
+//! once per instruction (CR 701.24a), because each shuffle is an observable event —
+//! CR 701.24f has shuffle watchers (Cosi's Trickster) trigger once per simultaneous
+//! shuffle — and is journaled.
 //!
 //! Every test drives the real cast / trigger pipeline with printed cards and pairs
 //! its event-count assertion with a reach-guard proving the object actually arrived
@@ -181,7 +181,7 @@ fn worldspine_wurm_trigger_shuffles_its_owner_once() {
     assert_eq!(
         watcher_counters(&runner, trickster),
         1,
-        "one shuffle instruction triggers a shuffle-watcher once (CR 701.24f)"
+        "one shuffle instruction triggers a shuffle-watcher once (CR 701.24a, 701.24f)"
     );
 }
 
@@ -428,8 +428,10 @@ fn shuffle_a_card_from_hand_into_library_shuffles_once_after_an_interactive_choi
 
 /// Gomazoa: "{T}: Put this creature and each creature it's blocking on top of their
 /// owners' libraries, then those players shuffle." The move and the shuffle arrive as
-/// two separately parsed clauses, but are still one shuffle instruction — its owner's
-/// library is shuffled once, not once for the move and once for the clause.
+/// two separately parsed clauses but are one shuffle instruction — its owner's library
+/// is shuffled once, not once for the move and once for the clause. (The current lowering
+/// moves only Gomazoa itself and drops "each creature it's blocking"; that pre-existing
+/// gap is not exercised here — this pins the shuffle count of the shape it does lower.)
 #[test]
 fn put_on_top_of_owners_libraries_then_those_players_shuffle_shuffles_once() {
     let mut scenario = GameScenario::new();
@@ -455,4 +457,117 @@ fn put_on_top_of_owners_libraries_then_those_players_shuffle_shuffles_once() {
     assert!(in_library(&runner, P0, gomazoa));
     assert_eq!(shuffles(&events, P0), 1, "events: {events:?}");
     assert_eq!(shuffles(&events, P1), 0, "events: {events:?}");
+}
+
+/// Cathartic Parting (printed text): two shuffle-into-library instructions in one chain —
+/// the opponent's artifact or enchantment goes into the OPPONENT's library, then up to four
+/// of your graveyard cards go into YOURS. Each owner is shuffled once; the second
+/// instruction must not re-shuffle the first one's owner.
+#[test]
+fn two_shuffle_instructions_in_one_spell_shuffle_each_owner_once() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_mana_pool(P0, pool());
+    let parting = scenario
+        .add_spell_to_hand_from_oracle(
+            P0,
+            "Cathartic Parting",
+            false,
+            "The owner of target artifact or enchantment an opponent controls shuffles it into their library. You may shuffle up to four target cards from your graveyard into your library.",
+        )
+        .id();
+    let enchantment = scenario
+        .add_enchantment_from_oracle(P1, "Opposing Enchantment", "")
+        .id();
+    let graveyard_card = scenario
+        .add_creature_to_graveyard(P0, "My Graveyard Card", 2, 2)
+        .id();
+    scenario.add_card_to_library_top(P0, "P0 Library Card");
+    scenario.add_card_to_library_top(P1, "P1 Library Card");
+    let mut runner = scenario.build();
+
+    let outcome = runner
+        .cast(parting)
+        .target_objects(&[enchantment, graveyard_card])
+        .accept_optional()
+        .resolve();
+    let mut events = outcome.events().to_vec();
+    drain_stack(&mut runner, &mut events);
+
+    // Reach guards: both moves happened, each into its owner's library.
+    assert!(in_library(&runner, P1, enchantment));
+    assert!(in_library(&runner, P0, graveyard_card));
+    assert_eq!(shuffles(&events, P1), 1, "events: {events:?}");
+    assert_eq!(shuffles(&events, P0), 1, "events: {events:?}");
+}
+
+/// Guan Yu, Sainted Warrior: "When Guan Yu is put into your graveyard from the battlefield,
+/// you may shuffle Guan Yu into your library." Declining shuffles nothing (the terminal
+/// shuffle belongs to the declined instruction); accepting shuffles once. The decline leg's
+/// reach guard is that the trigger resolved and Guan Yu died.
+#[test]
+fn optional_shuffle_into_library_shuffles_only_when_accepted() {
+    for accept in [false, true] {
+        let db = card_db();
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        scenario.with_mana_pool(P0, pool());
+        let guan_yu = scenario.add_real_card(P1, "Guan Yu, Sainted Warrior", Zone::Battlefield, db);
+        let murder = scenario.add_real_card(P0, "Murder", Zone::Hand, db);
+        scenario.add_card_to_library_top(P1, "P1 Library Card");
+        let mut runner = scenario.build();
+
+        let cast = runner.cast(murder).target_objects(&[guan_yu]);
+        let outcome = if accept {
+            cast.accept_optional().resolve()
+        } else {
+            cast.decline_optional().resolve()
+        };
+        let mut events = outcome.events().to_vec();
+        drain_stack(&mut runner, &mut events);
+
+        if accept {
+            assert!(in_library(&runner, P1, guan_yu), "accept leg: reach guard");
+            assert_eq!(shuffles(&events, P1), 1, "events: {events:?}");
+        } else {
+            assert_eq!(
+                runner.state().objects[&guan_yu].zone,
+                Zone::Graveyard,
+                "decline leg: Guan Yu died and stayed in the graveyard"
+            );
+            assert_eq!(shuffles(&events, P1), 0, "events: {events:?}");
+        }
+    }
+}
+
+/// A shuffle-into-library chain must read only the owners it published itself. After a
+/// Worldspine Wurm resolution shuffled P1, a later Nexus of Fate (whose redirect publishes
+/// nothing) must not shuffle P1 again off the Wurm's leftover population.
+#[test]
+fn a_later_shuffle_instruction_does_not_reuse_an_earlier_resolutions_owners() {
+    let db = card_db();
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_mana_pool(P0, pool());
+    let wurm = scenario.add_real_card(P1, "Worldspine Wurm", Zone::Battlefield, db);
+    let murder = scenario.add_real_card(P0, "Murder", Zone::Hand, db);
+    let nexus = scenario.add_real_card(P0, "Nexus of Fate", Zone::Hand, db);
+    scenario.add_card_to_library_top(P0, "P0 Library Card");
+    scenario.add_card_to_library_top(P1, "P1 Library Card");
+    let mut runner = scenario.build();
+
+    let outcome = runner.cast(murder).target_objects(&[wurm]).resolve();
+    let mut wurm_events = outcome.events().to_vec();
+    drain_stack(&mut runner, &mut wurm_events);
+    // Reach guard: the Wurm resolution shuffled P1 once and left its population behind.
+    assert!(in_library(&runner, P1, wurm));
+    assert_eq!(shuffles(&wurm_events, P1), 1, "events: {wurm_events:?}");
+
+    let outcome = runner.cast(nexus).resolve();
+    let mut nexus_events = outcome.events().to_vec();
+    drain_stack(&mut runner, &mut nexus_events);
+    // Reach guard: Nexus of Fate went back into its owner's (P0's) library.
+    assert!(in_library(&runner, P0, nexus));
+    assert_eq!(shuffles(&nexus_events, P0), 1, "events: {nexus_events:?}");
+    assert_eq!(shuffles(&nexus_events, P1), 0, "events: {nexus_events:?}");
 }

@@ -20061,9 +20061,10 @@ mod tests {
                     target: TargetFilter::Owner
                 }
             ));
-            // CR 701.24a + CR 701.24c: the redirect moves the card and this terminal
-            // shuffle is the instruction's single randomization — it carries the
-            // owner-library scope, which makes the redirect defer its own shuffle.
+            // CR 701.24a: the redirect's delivery performs the instruction's one
+            // shuffle; this terminal shuffle carries the owner-library scope like
+            // every shuffle-into-library chain and finds no population published by
+            // the redirect (an event modifier), so it adds none.
             assert!(
                 matches!(
                     shuffle.player_scope,
