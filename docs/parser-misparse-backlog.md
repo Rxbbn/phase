@@ -15,8 +15,8 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 
 | # | Root cause | # cards | Fix hint (where it likely lives) |
 |---|------------|--------:|----------------------------------|
-| 1 | Relative-clause / filter restriction on target dropped | 727 | oracle_target.rs / game/filter.rs — extend TargetFilter property extraction for trailing relative clauses |
-| 2 | Dropped intervening-if / gating condition (condition: null) | 571 | oracle_nom/condition.rs parse_inner_condition — trigger/static parsers must delegate condition extraction here |
+| 1 | Relative-clause / filter restriction on target dropped | 726 | oracle_target.rs / game/filter.rs — extend TargetFilter property extraction for trailing relative clauses |
+| 2 | Dropped intervening-if / gating condition (condition: null) | 572 | oracle_nom/condition.rs parse_inner_condition — trigger/static parsers must delegate condition extraction here |
 | 3 | Anaphor bound to wrong referent | 402 | oracle_quantity.rs context-ref resolution + game/ability_utils.rs forward_result wiring |
 | 4 | Conjoined / chained second effect clause dropped | 381 | oracle.rs effect-chain composition — split on 'and'/'then'/sentence boundaries and build sub_ability chain |
 | 5 | Dropped 'for each' / dynamic count collapsed to Fixed | 328 | oracle_quantity.rs parse_for_each_clause / parse_quantity_ref — thread ForEach/ObjectCount into the effect count field |
@@ -49,7 +49,7 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 
 ## Full card lists per root cause
 
-### 1. Relative-clause / filter restriction on target dropped  (727 cards)
+### 1. Relative-clause / filter restriction on target dropped  (726 cards)
 
 **Signature.** TargetFilter/affected emitted with empty or missing properties; a trailing restrictive clause (type, subtype, color, mana value, zone, combat/temporal/control predicate, exclusion) is silently dropped, over-broadening the filter.
 
@@ -146,7 +146,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Caesar, Legion's Emperor
 - Calix, Destiny's Hand
 - Callous Giant
-- Campfire
 - Cantor of the Refrain
 - Captain America's Shield
 - Captain N'ghathrod
@@ -787,7 +786,7 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 
 </details>
 
-### 2. Dropped intervening-if / gating condition (condition: null)  (571 cards)
+### 2. Dropped intervening-if / gating condition (condition: null)  (572 cards)
 
 **Signature.** Trigger/static/replacement/spell condition left null though Oracle has an 'if/while/as long as/unless' game-state gate; the effect resolves unconditionally (CR 603.4 / 608.2c).
 
@@ -1015,6 +1014,7 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Hall of the Bandit Lord
 - Hawkeye, Avenging Archer
 - Head to Head
+- Hedron Alignment
 - Hedron-Field Purists
 - Heir of the Ancient Fang
 - Helicarrier Strike
@@ -2780,6 +2780,7 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Bringer of the Black Dawn
 - Burning-Rune Demon
 - Calibrated Blast
+- Campfire
 - Canyon Drake
 - Captain Kirk, Boldly Going
 - Cathartic Operation
@@ -2839,7 +2840,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Harper Recruiter
 - Haunted Angel
 - Hazardroot Herbalist
-- Hedron Alignment
 - Hellkite Courser
 - Hildibrand Manderville
 - Hinder
