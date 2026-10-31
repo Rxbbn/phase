@@ -706,7 +706,7 @@ pub(crate) fn printed_double_faced_copy(
         })
         .map(|other| crate::types::proposed_event::DoubleFacedCopy {
             other_face: Box::new(other),
-            back_face_up: false,
+            orientation: crate::types::proposed_event::DoubleFacedOrientation::FrontUp,
         })
 }
 

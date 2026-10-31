@@ -337,9 +337,23 @@ pub struct DoubleFacedCopy {
     /// The face that is not up, in the same swap-snapshot form a transformed
     /// double-faced permanent keeps in `back_face` (`transform_permanent`).
     pub other_face: Box<BackFaceData>,
-    /// CR 707.8a: true when the copied permanent has its back face up, so the
-    /// token enters with its back face up (not a transform, CR 712.14a).
-    pub back_face_up: bool,
+    /// CR 707.8a: which face of the copied permanent is up, so the token enters
+    /// the same way (not a transform, CR 712.14a). Carried from the producer
+    /// rather than re-derived from the stored face's layout, which a transform
+    /// round trip erases.
+    pub orientation: DoubleFacedOrientation,
+}
+
+/// Which face of a double-faced source is up, in the representation a real
+/// double-faced permanent uses for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DoubleFacedOrientation {
+    /// Front face up (also a double-faced card outside the battlefield, CR 712.8a).
+    FrontUp,
+    /// A transforming double-faced permanent with its back face up (`transformed`).
+    TransformedBack,
+    /// A modal double-faced permanent with its back face up (`modal_back_face`).
+    ModalBack,
 }
 
 /// CR 707.2 + CR 707.5: Copy-token creation payload carried by the same

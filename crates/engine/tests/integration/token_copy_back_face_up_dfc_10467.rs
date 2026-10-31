@@ -26,6 +26,7 @@ use engine::game::game_object::BackFaceData;
 use engine::game::printed_cards::swap_object_faces;
 use engine::game::scenario::{GameRunner, GameScenario, P0};
 use engine::game::transform::transform_permanent;
+use engine::game::zones::move_to_zone;
 use engine::types::card::LayoutKind;
 use engine::types::card_type::{CardType, CoreType};
 use engine::types::events::GameEvent;
@@ -42,6 +43,10 @@ const CACKLING_COUNTERPART: &str = "Create a token that's a copy of target creat
 enum SourceFace {
     Front,
     Back,
+    /// Transformed, bounced to hand and replayed through the production zone
+    /// moves: front face up again, but the stored face is the layout-less swap
+    /// snapshot `transform_permanent` made.
+    RoundTripped,
 }
 
 /// The stored other face of Thraben Gargoyle // Stonewing Antagonizer, with the
@@ -120,6 +125,19 @@ fn copy_gargoyle(layout: LayoutKind, face: SourceFace) -> Copied {
             }
             other => panic!("back-face-up fixture only builds Transform and Modal, got {other:?}"),
         }
+    }
+    if face == SourceFace::RoundTripped {
+        assert_eq!(
+            layout,
+            LayoutKind::Transform,
+            "round trip is the transform shape"
+        );
+        let mut events = Vec::new();
+        transform_permanent(runner.state_mut(), gargoyle, &mut events)
+            .expect("the Gargoyle has a back face to transform into");
+        // Production zone exit (swap back to the front face) and re-entry.
+        move_to_zone(runner.state_mut(), gargoyle, Zone::Hand, &mut events);
+        move_to_zone(runner.state_mut(), gargoyle, Zone::Battlefield, &mut events);
     }
 
     let outcome = runner.cast(spell).target_object(gargoyle).resolve();
@@ -285,6 +303,10 @@ fn copy_of_front_face_up_modal_dfc_enters_front_face_up_and_is_double_faced() {
 
     let token = &c.runner.state().objects[&c.token];
     assert!(!token.transformed);
+    assert!(
+        !token.modal_back_face,
+        "a copy of a front-face-up modal permanent is not shown back face up"
+    );
     assert_eq!(token.name, "Thraben Gargoyle");
     assert_eq!(
         token.back_face.as_ref().map(|f| f.name.as_str()),
@@ -292,7 +314,48 @@ fn copy_of_front_face_up_modal_dfc_enters_front_face_up_and_is_double_faced() {
     );
 }
 
-/// Boundary: a single-faced source and a meld card yield a single-faced token.
+/// X1: a transforming permanent that was transformed, bounced and replayed is
+/// front face up with `transformed == false` AND an erased stored-face layout
+/// (`transform_permanent` snapshots the front face with `layout_kind: None`, zone
+/// exit swaps it back preserving that). It is still a double-faced permanent, so
+/// its token copy must be double-faced (CR 707.8a). Built entirely through the
+/// production transform and zone-move path, not hand-stamped fields.
+#[test]
+fn copy_of_transformed_bounced_and_replayed_dfc_is_double_faced() {
+    let mut c = copy_gargoyle(LayoutKind::Transform, SourceFace::RoundTripped);
+
+    let source = &c.runner.state().objects[&c.source];
+    // REACH GUARD: the exact shape that defeated a layout-only gate.
+    assert_eq!(source.zone, Zone::Battlefield);
+    assert!(!source.transformed, "front face up again");
+    assert_eq!(source.name, "Thraben Gargoyle");
+    let stored = source.back_face.as_ref().expect("the other face is stored");
+    assert_eq!(stored.name, "Stonewing Antagonizer");
+    assert!(stored.is_swap_snapshot, "stored by the production swap");
+    assert_eq!(
+        stored.layout_kind, None,
+        "the transform round trip erased the layout"
+    );
+
+    let token = &c.runner.state().objects[&c.token];
+    assert!(!token.transformed, "the source was front face up");
+    assert_eq!(token.name, "Thraben Gargoyle");
+    assert_eq!(
+        token.back_face.as_ref().map(|f| f.name.as_str()),
+        Some("Stonewing Antagonizer"),
+        "CR 707.8a: the token is double-faced"
+    );
+    let mut events = Vec::new();
+    transform_permanent(c.runner.state_mut(), c.token, &mut events)
+        .expect("the token can transform");
+    assert_eq!(
+        c.runner.state().objects[&c.token].name,
+        "Stonewing Antagonizer"
+    );
+}
+
+/// Boundary (printed shapes: Alrund, God of the Cosmos // Hakka, Whispering Raven
+/// for the modal fixtures, Bruna, the Fading Light // Brisela for meld): a meld card yields a single-faced token.
 /// Meld cards cannot transform (CR 712.4c, CR 712.9), so 707.8a's double-faced
 /// token shape is not given to a copy of one. The reach guard is that the copy
 /// itself happened (`copy_gargoyle` asserts the token), and for the meld case that
@@ -311,6 +374,17 @@ fn copy_of_meld_card_is_not_a_double_faced_token() {
     assert!(
         token.back_face.is_none(),
         "a meld card's token copy is single-faced"
+    );
+
+    // PAIRED POSITIVE in the same scenario: the identical source with a
+    // Transform other face DOES yield a double-faced token, so the assertions
+    // above discriminate the feature, not just a loosened layout gate.
+    let positive = copy_gargoyle(LayoutKind::Transform, SourceFace::Front);
+    assert!(
+        positive.runner.state().objects[&positive.token]
+            .back_face
+            .is_some(),
+        "paired positive: a Transform DFC copy is double-faced"
     );
 }
 
@@ -379,4 +453,24 @@ fn momir_pool_pick_of_double_faced_card_makes_double_faced_token() {
         Some("Insectile Aberration"),
         "CR 707.8a: the pool token is double-faced"
     );
+}
+
+/// A populated `DoubleFacedCopy` survives a serde round trip in every orientation
+/// (it rides in serialized in-flight copy-token state and the CR 733 journal).
+#[test]
+fn double_faced_copy_serde_round_trips_every_orientation() {
+    use engine::types::proposed_event::{DoubleFacedCopy, DoubleFacedOrientation};
+    for orientation in [
+        DoubleFacedOrientation::FrontUp,
+        DoubleFacedOrientation::TransformedBack,
+        DoubleFacedOrientation::ModalBack,
+    ] {
+        let original = DoubleFacedCopy {
+            other_face: Box::new(stonewing_antagonizer(LayoutKind::Modal)),
+            orientation,
+        };
+        let json = serde_json::to_string(&original).expect("serializes");
+        let back: DoubleFacedCopy = serde_json::from_str(&json).expect("deserializes");
+        assert_eq!(back, original, "{orientation:?} round trips");
+    }
 }

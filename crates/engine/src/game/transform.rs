@@ -309,14 +309,22 @@ pub fn is_double_faced_permanent(obj: &crate::game::game_object::GameObject) -> 
 /// meld cards (CR 712.4c / CR 712.9: they cannot transform, and a melded
 /// permanent's back faces only define the combined permanent, CR 712.4b), merged
 /// permanents, face-down objects (CR 708.2), flip / split / adventure / omen /
-/// prepare cards (single-faced, CR 701.27c), and an object whose copiable values
-/// come from a layer-1 copy effect (it is then a copy of something, not the
-/// double-faced object itself, CR 712.8e).
+/// prepare cards (single-faced, CR 701.27c), a specialized permanent (its stash
+/// is likewise a layout-less swap snapshot), and an object whose copiable values
+/// come from a layer-1 copy effect. That last exclusion is CR-ambiguous and chosen
+/// conservatively, not derived: CR 707.8 / CR 707.2 make such an object a copy of
+/// something else, while CR 707.8a's "as modified by any other copy effects that
+/// apply to that object" reads toward a two-faced token for a Mirrorweave-style
+/// case; the single-faced answer is the safe under-claim.
 pub(crate) fn double_faced_copy_of(
     obj: &crate::game::game_object::GameObject,
 ) -> Option<crate::types::proposed_event::DoubleFacedCopy> {
     use crate::types::card::LayoutKind;
-    if obj.face_down || obj.flipped || obj.merge_kind.is_some() || obj.layer1_copy_effect.is_some()
+    if obj.face_down
+        || obj.flipped
+        || obj.merge_kind.is_some()
+        || obj.layer1_copy_effect.is_some()
+        || obj.specialized_color.is_some()
     {
         return None;
     }
@@ -325,15 +333,29 @@ pub(crate) fn double_faced_copy_of(
     // `modal_back_face`, keeping the printed layout in the stored slot (#7565); a
     // transformed one shows it through `transformed` with the layout erased. The
     // layout gate keeps a split card's `modal_back_face` (CR 709.3) out.
+    //
+    // A front-face-up permanent that transformed and then left and re-entered the
+    // battlefield keeps a layout-less swap snapshot as its stored face (zone exit
+    // swaps back through `swap_object_faces`, which preserves the stored slot's
+    // erased layout), so `is_swap_snapshot` with no layout also marks a
+    // double-faced object; split/adventure/omen halves keep a typed layout.
     let is_double_faced = obj.transformed
         || matches!(
             other_face.layout_kind,
             Some(LayoutKind::Transform | LayoutKind::Modal)
-        );
-    let back_face_up = obj.transformed || obj.modal_back_face;
+        )
+        || (other_face.is_swap_snapshot && other_face.layout_kind.is_none());
+    use crate::types::proposed_event::DoubleFacedOrientation;
+    let orientation = if obj.transformed {
+        DoubleFacedOrientation::TransformedBack
+    } else if obj.modal_back_face {
+        DoubleFacedOrientation::ModalBack
+    } else {
+        DoubleFacedOrientation::FrontUp
+    };
     is_double_faced.then(|| crate::types::proposed_event::DoubleFacedCopy {
         other_face: Box::new(other_face.clone()),
-        back_face_up,
+        orientation,
     })
 }
 
