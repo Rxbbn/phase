@@ -1764,6 +1764,7 @@ mod base_pt_dynamic_set_std_base_pt;
 mod become_chosen_subtype;
 mod become_color_set_std_batch;
 mod behold_chosen_object_power_damage;
+mod black_cat_exile_two_face_down;
 mod bre_of_clan_stoutarm_endstep;
 mod bring_to_light_converge_mana_value;
 mod captain_america_first_tap_msh_wave2;

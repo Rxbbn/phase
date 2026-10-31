@@ -739,13 +739,25 @@ fn parse_reveal_until_rest_zone_and_order(lower: &str) -> (Option<Zone>, DigRest
     (rest_zone, rest_order)
 }
 
-/// Whole-line dig continuation "put the rest on the bottom of your library
-/// [in a random order | in any order]" following a `ChooseFromZone`.
+/// Whole-line dig continuation "put the rest on the bottom of <owner's> library
+/// [in a random order | in any order]" following a `Dig` or `ChooseFromZone`.
 ///
 /// CR 400.5 + CR 608.2c: "in a random order" is an instruction distinct from
 /// the player-chosen ordering in "in any order".
+///
+/// CR 400.3: a library is always its owner's, so the possessive ("your", "their",
+/// "that player's", "that library") selects no player; it must not decide whether
+/// the order instruction is read (Black Cat / Gonti: "... of their library in a
+/// random order" / "... of that library in a random order").
 fn parse_put_rest_on_bottom_line(input: &str) -> OracleResult<'_, DigRestOrder> {
-    let (input, _) = tag("put the rest on the bottom of your library").parse(input)?;
+    let (input, _) = (
+        tag("put the rest on the bottom of "),
+        alt((
+            value((), tag("that library")),
+            value((), (parse_partition_owner_possessive, tag("library"))),
+        )),
+    )
+        .parse(input)?;
     let (input, rest_order) = opt(alt((
         value(DigRestOrder::Random, tag(" in a random order")),
         value(DigRestOrder::Preserve, tag(" in any order")),
@@ -1250,13 +1262,15 @@ fn parse_exile_looked_at_card(lower: &str) -> Option<bool> {
     Some(face_down)
 }
 
-/// CR 702.75a + CR 406.3: Recognize "exile one of them face down" — a player
-/// CHOICE of one card from among the cards a preceding private `Dig` looked at
-/// (the Gonti, Lord of Luxury class: "look at the top four cards of an
-/// opponent's library, exile one of them face down ..."). Distinct from
+/// CR 702.75a + CR 406.3: Recognize "exile <number> of them face down" — a player
+/// CHOICE of exactly that many cards from among the cards a preceding private
+/// `Dig` looked at (the Gonti, Lord of Luxury class, `one`: "look at the top
+/// four cards of an opponent's library, exile one of them face down ..."; the
+/// Black Cat, Cunning Thief class, `two`). Distinct from
 /// `parse_exile_looked_at_card` ("exile it/them ...", the Gonti, Canny
-/// Acquisitor wholesale impulse idiom): "one of them" means the controller
-/// selects exactly one of the N looked-at cards. The "face down" suffix is the
+/// Acquisitor wholesale impulse idiom): "<number> of them" means the controller
+/// selects exactly that many of the N looked-at cards. Returns the number
+/// alongside the counter riders. The "face down" suffix is the
 /// CR 406.3 hidden-information marker required by this class; pure-peek Digs
 /// (Delver of Secrets — no exile clause) never reach this recognizer.
 ///
@@ -1267,16 +1281,22 @@ fn parse_exile_looked_at_card(lower: &str) -> Option<bool> {
 /// rider to the shared `parse_counter_suffix_body_combinator`, so every
 /// `<count> <type> counter(s) on it` shape (a/two/X, +1/+1, keyword, named)
 /// is covered by the one building block — not just "a hatching counter".
-fn parse_exile_one_of_them_face_down(lower: &str) -> Option<Vec<(CounterType, QuantityExpr)>> {
+fn parse_exile_n_of_them_face_down(lower: &str) -> Option<(u32, Vec<(CounterType, QuantityExpr)>)> {
     let trimmed = lower.trim().trim_end_matches('.').trim_end();
-    let (rest, _) = (
+    // CR 701.20e + CR 406.3: "exile <number> of them|those cards face down" — the number
+    // axis is the shared `parse_number` ("one" for Gonti, "two" for Black Cat), never
+    // a per-count tag. Zero is not an exile instruction.
+    let (rest, (_, count, _, _, _, _)) = (
         tag::<_, _, OracleError<'_>>("exile "),
-        alt((tag("one of them"), tag("one of those cards"))),
+        verify(nom_primitives::parse_number, |n: &u32| *n >= 1),
         multispace1,
-        tag("face down"),
+        tag("of "),
+        alt((tag("them"), tag("those cards"))),
+        multispace1,
     )
         .parse(trimmed)
         .ok()?;
+    let (rest, _) = tag::<_, _, OracleError<'_>>("face down").parse(rest).ok()?;
     // CR 122.1: optional "with <count> <type> counter(s) on it" rider. Either
     // the bare form (nothing after "face down") or exactly one counter clause.
     match preceded(
@@ -1287,11 +1307,11 @@ fn parse_exile_one_of_them_face_down(lower: &str) -> Option<Vec<(CounterType, Qu
     {
         Ok((after, entry)) => {
             eof::<_, OracleError<'_>>(after).ok()?;
-            Some(vec![entry])
+            Some((count, vec![entry]))
         }
         Err(_) => {
             eof::<_, OracleError<'_>>(rest).ok()?;
-            Some(Vec::new())
+            Some((count, Vec::new()))
         }
     }
 }
@@ -6827,7 +6847,8 @@ pub(super) fn apply_clause_continuation(
         // binds to the dug card). Without this fusion the Dig short-circuited as
         // a keep_count:0 pure-peek and a sibling `ChangeZone { ParentTarget }`
         // exiled the trigger source itself (#1146).
-        ContinuationAst::ExileOneOfThemFaceDown {
+        ContinuationAst::ExileLookedAtCardsFaceDown {
+            count,
             enter_with_counters,
         } => {
             // Same `DigLook` antecedent as `ExileLookedAtCard` above — the two scans
@@ -6852,7 +6873,7 @@ pub(super) fn apply_clause_continuation(
                     destination,
                     ..
                 } => {
-                    *keep_count = Some(1);
+                    *keep_count = Some(count);
                     *up_to = false;
                     *destination = Some(Zone::Exile);
                 }
@@ -7139,7 +7160,7 @@ pub(super) fn continuation_absorbs_current(
         // Recognition was already gated on a preceding `Dig`; the "exile one of
         // them face down" clause patches that Dig (keep_count:1 / Exile) and
         // pushes the conceal sub-ability — it emits no sibling def.
-        ContinuationAst::ExileOneOfThemFaceDown { .. } => true,
+        ContinuationAst::ExileLookedAtCardsFaceDown { .. } => true,
         ContinuationAst::ChooseAndSacrificeRestFilter { .. } => true,
     }
 }
@@ -8949,13 +8970,14 @@ pub(super) fn parse_followup_continuation_ast_with_search_destination(
         // `ChangeZone { ParentTarget }`, which exiled the trigger source itself.
         // `reveal: false` scopes this to the private look form.
         Effect::Dig { reveal: false, .. }
-            if parse_exile_one_of_them_face_down(&lower).is_some() =>
+            if parse_exile_n_of_them_face_down(&lower).is_some() =>
         {
             // CR 122.1: carry any "... face down with a <type> counter on it"
             // rider so the fusion places the counters on the CHOSEN dug card.
-            let enter_with_counters =
-                parse_exile_one_of_them_face_down(&lower).unwrap_or_default();
-            Some(ContinuationAst::ExileOneOfThemFaceDown {
+            let (count, enter_with_counters) =
+                parse_exile_n_of_them_face_down(&lower).unwrap_or_default();
+            Some(ContinuationAst::ExileLookedAtCardsFaceDown {
+                count,
                 enter_with_counters,
             })
         }
@@ -13892,7 +13914,8 @@ mod tests {
         let env = env_for(&defs);
         apply_clause_continuation(
             &mut defs,
-            ContinuationAst::ExileOneOfThemFaceDown {
+            ContinuationAst::ExileLookedAtCardsFaceDown {
+                count: 1,
                 enter_with_counters: Vec::new(),
             },
             AbilityKind::Spell,
@@ -13941,7 +13964,8 @@ mod tests {
         let hatching = crate::types::counter::parse_counter_type("hatching");
         apply_clause_continuation(
             &mut defs,
-            ContinuationAst::ExileOneOfThemFaceDown {
+            ContinuationAst::ExileLookedAtCardsFaceDown {
+                count: 1,
                 enter_with_counters: vec![(hatching.clone(), QuantityExpr::Fixed { value: 1 })],
             },
             AbilityKind::Spell,
@@ -16991,7 +17015,8 @@ mod tests {
         );
         assert_eq!(
             result,
-            Some(ContinuationAst::ExileOneOfThemFaceDown {
+            Some(ContinuationAst::ExileLookedAtCardsFaceDown {
+                count: 1,
                 enter_with_counters: Vec::new(),
             }),
             "the Gonti-class exile-the-dug-card clause must be recognized"
@@ -17010,7 +17035,8 @@ mod tests {
         );
         assert_eq!(
             result,
-            Some(ContinuationAst::ExileOneOfThemFaceDown {
+            Some(ContinuationAst::ExileLookedAtCardsFaceDown {
+                count: 1,
                 enter_with_counters: Vec::new(),
             })
         );
@@ -17023,10 +17049,11 @@ mod tests {
     /// trigger source itself (the #1146 shape).
     #[test]
     fn exile_one_of_them_face_down_with_counter_rider_captures_counters() {
-        let entries = parse_exile_one_of_them_face_down(
+        let (count, entries) = parse_exile_n_of_them_face_down(
             "exile one of them face down with a hatching counter on it",
         )
         .expect("the counter-rider form must still be recognized");
+        assert_eq!(count, 1);
         assert_eq!(
             entries,
             vec![(
@@ -17042,10 +17069,104 @@ mod tests {
     #[test]
     fn exile_one_of_them_face_down_bare_form_has_no_counters() {
         assert_eq!(
-            parse_exile_one_of_them_face_down("exile one of them face down"),
-            Some(Vec::new()),
+            parse_exile_n_of_them_face_down("exile one of them face down"),
+            Some((1, Vec::new())),
             "the bare form is a match with no counter rider"
         );
+    }
+
+    /// CR 400.3: the owner possessive does not decide whether "in a random order" is read.
+    #[test]
+    fn put_the_rest_on_the_bottom_reads_random_order_for_every_library_possessive() {
+        for text in [
+            "put the rest on the bottom of your library in a random order",
+            "put the rest on the bottom of their library in a random order",
+            "put the rest on the bottom of that library in a random order.",
+            "put the rest on the bottom of that player's library in a random order",
+        ] {
+            assert_eq!(
+                parse_put_rest_on_bottom_line(text)
+                    .ok()
+                    .map(|(_, order)| order),
+                Some(DigRestOrder::Random),
+                "{text}"
+            );
+        }
+        assert_eq!(
+            parse_put_rest_on_bottom_line("put the rest on the bottom of their library")
+                .ok()
+                .map(|(_, order)| order),
+            Some(DigRestOrder::Preserve)
+        );
+    }
+
+    /// Black Cat, Cunning Thief: the number axis is the shared `parse_number`, so "two"
+    /// recognizes with count 2 — and a zero count is not an exile instruction.
+    #[test]
+    fn exile_two_of_them_face_down_captures_the_count() {
+        assert_eq!(
+            parse_exile_n_of_them_face_down("exile two of them face down"),
+            Some((2, Vec::new()))
+        );
+        assert_eq!(
+            parse_exile_n_of_them_face_down("exile three of those cards face down"),
+            Some((3, Vec::new()))
+        );
+        assert!(parse_exile_n_of_them_face_down("exile zero of them face down").is_none());
+    }
+
+    /// Black Cat: "exile two of them face down" after a private `Dig` is the plural
+    /// continuation, carrying its count.
+    #[test]
+    fn exile_two_of_them_face_down_recognized_after_peek_dig() {
+        let dig = make_peek_dig();
+        let result = parse_followup_continuation_ast(
+            "Exile two of them face down.",
+            &dig,
+            &mut ParseContext::default(),
+        );
+        assert_eq!(
+            result,
+            Some(ContinuationAst::ExileLookedAtCardsFaceDown {
+                count: 2,
+                enter_with_counters: Vec::new(),
+            })
+        );
+    }
+
+    /// Black Cat: applying the plural continuation keeps `count` cards, not one.
+    #[test]
+    fn exile_two_of_them_face_down_patches_keep_count_two() {
+        let mut defs = vec![AbilityDefinition::new(
+            AbilityKind::Spell,
+            make_dig_effect(),
+        )];
+        let env = env_for(&defs);
+        apply_clause_continuation(
+            &mut defs,
+            ContinuationAst::ExileLookedAtCardsFaceDown {
+                count: 2,
+                enter_with_counters: Vec::new(),
+            },
+            AbilityKind::Spell,
+            &env,
+        );
+        let Effect::Dig {
+            keep_count,
+            up_to,
+            destination,
+            ..
+        } = &*defs[0].effect
+        else {
+            panic!("expected patched Dig, got {:?}", defs[0].effect);
+        };
+        assert_eq!(*keep_count, Some(2));
+        assert!(!*up_to, "\"exile two\" is exactly two, not up to two");
+        assert_eq!(*destination, Some(Zone::Exile));
+        assert!(matches!(
+            defs[0].sub_ability.as_deref().map(|d| &*d.effect),
+            Some(Effect::HideawayConceal { .. })
+        ));
     }
 
     /// #1146 scope guard: the recognizer requires the "face down" CR 406.3
@@ -17054,7 +17175,7 @@ mod tests {
     #[test]
     fn exile_one_of_them_without_face_down_is_not_gonti_continuation() {
         assert!(
-            parse_exile_one_of_them_face_down("exile one of them").is_none(),
+            parse_exile_n_of_them_face_down("exile one of them").is_none(),
             "without the 'face down' marker this is not the Gonti look-and-exile class"
         );
     }
@@ -17072,7 +17193,10 @@ mod tests {
             &mut ParseContext::default(),
         );
         assert!(
-            !matches!(result, Some(ContinuationAst::ExileOneOfThemFaceDown { .. })),
+            !matches!(
+                result,
+                Some(ContinuationAst::ExileLookedAtCardsFaceDown { .. })
+            ),
             "a pure-peek 'you may reveal it' must not be fused into the Gonti exile continuation"
         );
     }
