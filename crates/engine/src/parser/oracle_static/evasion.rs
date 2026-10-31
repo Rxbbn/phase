@@ -38,15 +38,16 @@ pub(crate) fn classify_block_exception(filter_text: &str) -> Option<BlockExcepti
     //
     // Only `DroppedDisjunct` declines; an `Unconstrained` filter still lowers to
     // `Quality` exactly as before. That scoping is measured, not assumed: a
-    // census of `CantBeBlockedExceptBy { Quality(Any) }` over the whole card
-    // corpus finds ONE row at this change's base - the B.F.M. (Big Furry
-    // Monster) face carrying "can't be blocked except by three or", whose text
-    // MTGJSON has since moved to its other row, leaving zero at head - and that
-    // row is `supported: false` for unrelated reasons either way. So tightening
-    // `Unconstrained` to a decline would change no printed card today, and
-    // leaving it alone changes none either; it is left alone because the `by`
-    // direction leaves it alone, and the two directions should tighten
-    // together. NOTE for whoever revisits this: a non-separator tail is NOT
+    // census of `CantBeBlockedExceptBy { Quality(Any) }` finds ZERO rows at both
+    // this change's base and its head (measured with one MTGJSON vintage on both
+    // sides; a cross-vintage measurement previously showed a spurious single
+    // B.F.M. (Big Furry Monster) row, because that card has two same-named faces
+    // and only one of them reaches the export, so the two vintages disagreed
+    // about which face carries the "can't be blocked except by three or"
+    // clause). So tightening `Unconstrained` to a decline would change no
+    // printed card today, and leaving it alone changes none either; it is left
+    // alone because the `by` direction leaves it alone, and the two directions
+    // should tighten together. NOTE for whoever revisits this: a non-separator tail is NOT
     // `Unconstrained` - Agility Bobblehead's ", where X is the number of
     // Bobbleheads ..." reaches the `Filter` arm as
     // `Quality(Typed{Creature, WithKeyword(Haste)})` with that tail dropped,

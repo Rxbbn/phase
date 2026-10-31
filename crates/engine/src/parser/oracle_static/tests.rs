@@ -4488,14 +4488,20 @@ fn static_block_object_union_and_tail_shapes() {
 /// narrower — and in `parse_enchanted_equipped_predicate` it carries no
 /// `Unrecognized` marker, so it would be green.
 ///
-/// Both rows are negative; the positive reach-guard is the row pair below them,
-/// which proves the same wordings with a READABLE second disjunct still publish
-/// a two-leg `CantBeBlockedBy`.
+/// Covers BOTH axes. The `except by` row is load-bearing: its propagation site
+/// (`parse_enchanted_equipped_predicate`'s `else { return Vec::new() }`) had no
+/// revert detector, so replacing it with a blanket `CantBeBlocked` left all
+/// 25,817 lib tests green.
+///
+/// Every row here is negative; the positive reach-guard is the row set below
+/// them, which proves the same wordings with a READABLE second disjunct still
+/// publish their two-leg restriction.
 #[test]
 fn static_block_restriction_declines_an_unreadable_disjunct_without_going_blanket() {
     for line in [
         "~ can't be blocked by creatures with power 2 or less and/or your commander.",
         "Enchanted creature can't be blocked by creatures with power 2 or less and/or your commander.",
+        "Enchanted creature can't be blocked except by creatures with power 2 or less and/or your commander.",
     ] {
         let modes: Vec<_> = parse_static_line_multi(line)
             .iter()
@@ -4508,28 +4514,33 @@ fn static_block_restriction_declines_an_unreadable_disjunct_without_going_blanke
             "{line} must NOT lower to a blanket CantBeBlocked, got {modes:?}"
         );
         assert!(
-            !modes
-                .iter()
-                .any(|m| matches!(m, StaticMode::CantBeBlockedBy { .. })),
+            !modes.iter().any(|m| matches!(
+                m,
+                StaticMode::CantBeBlockedBy { .. } | StaticMode::CantBeBlockedExceptBy { .. }
+            )),
             "{line} must NOT publish a half-read blocker filter, got {modes:?}"
         );
     }
-    // Positive reach-guard: the same two wordings with a readable second
-    // disjunct DO publish the two-leg restriction, so the assertions above are
-    // remainder rejections and not a dead arm.
+    // Positive reach-guard: the same wordings with a readable second disjunct DO
+    // publish the two-leg restriction, so the assertions above are remainder
+    // rejections and not a dead arm.
     for line in [
         "~ can't be blocked by creatures with power 2 or less and/or Walls.",
         "Enchanted creature can't be blocked by creatures with power 2 or less and/or Walls.",
+        "Enchanted creature can't be blocked except by creatures with power 2 or less and/or Walls.",
     ] {
         let legs = parse_static_line_multi(line)
             .iter()
             .find_map(|d| match &d.mode {
                 StaticMode::CantBeBlockedBy {
                     filter: TargetFilter::Or { filters },
+                }
+                | StaticMode::CantBeBlockedExceptBy {
+                    kind: BlockExceptionKind::Quality(TargetFilter::Or { filters }),
                 } => Some(filters.len()),
                 _ => None,
             })
-            .unwrap_or_else(|| panic!("{line} must publish a union CantBeBlockedBy"));
+            .unwrap_or_else(|| panic!("{line} must publish a union blocker restriction"));
         assert_eq!(legs, 2, "{line}");
     }
 }
@@ -4575,10 +4586,15 @@ fn static_must_be_blocked_quality_declines_an_unreadable_disjunct() {
     }
 }
 
-/// CR 509.1b (issue #10364) — the POSITIVE fold path on the `dispatch.rs`
-/// self-reference route (`parse_static_line_inner`), whose decline path is
-/// covered above but whose accept path was not. "~" names the source, so this
-/// line reaches that route rather than the enchanted/equipped one.
+/// CR 509.1b (issue #10364) — the POSITIVE fold path on the route a `~` subject
+/// actually takes: `parse_subject_rule_static` (`oracle_static::dispatch`)
+/// delegates to `evasion::cant_be_blocked_mode`, which claims the line ~280
+/// lines before `parse_static_line_inner`'s own "can't be blocked" block.
+///
+/// `parse_static_line_inner`'s UNION accept path is therefore not covered by
+/// this test and remains untested; its single-leg path is pinned by the two
+/// pre-existing `static_cant_be_blocked_by_power_{le,ge}` tests and its decline
+/// path by `static_block_restriction_declines_an_unreadable_disjunct_without_going_blanket`.
 #[test]
 fn static_self_ref_block_restriction_folds_the_union() {
     let def =
