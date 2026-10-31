@@ -4614,7 +4614,15 @@ fn static_self_ref_block_restriction_folds_the_union() {
 /// every blocker — total unblockability — and drop the rider with no gap.
 #[test]
 fn static_block_restriction_does_not_fold_a_following_clause() {
-    let line = "~ can't be blocked by creatures with power 1 or less,                 and creatures blocking it get -1/-1.";
+    // EXACTLY ONE space after the comma. A longer whitespace run makes
+    // `starts_with_type_word` reject the continuation before
+    // `type_phrase_leg_closed` is ever consulted (`match_mass_union_separator`
+    // consumes only ", "), which silently removes this test's coverage of the
+    // leg-closure guard. Mutation-verified: disabling that guard turns this red.
+    let line = concat!(
+        "~ can't be blocked by creatures with power 1 or less, ",
+        "and creatures blocking it get -1/-1."
+    );
     let filters: Vec<_> = parse_static_line_multi(line)
         .iter()
         .filter_map(|d| match &d.mode {
@@ -4646,6 +4654,54 @@ fn static_block_restriction_does_not_fold_a_following_clause() {
         "expected the two-leg union, got {:?}",
         folded.mode
     );
+}
+
+/// CR 509.1b (issue #10364) — the `except by` SIBLING of
+/// `static_block_restriction_does_not_fold_a_following_clause`. This axis folds
+/// `TypeUnionLeg::TargetPhrase` legs, so before leg closure became a property of
+/// the CALL (`LegClosure`) rather than of the leg grammar, the exception
+/// whitelist gained a match-everything leg here and the evasion ability became a
+/// total no-op — the wider-than-printed direction.
+#[test]
+fn static_block_exception_does_not_fold_a_following_clause() {
+    let line = concat!(
+        "~ can't be blocked except by creatures with power 1 or less, ",
+        "and creatures blocking it get -1/-1."
+    );
+    let kinds: Vec<_> = parse_static_line_multi(line)
+        .iter()
+        .filter_map(|d| match &d.mode {
+            StaticMode::CantBeBlockedExceptBy { kind } => Some(kind.clone()),
+            _ => None,
+        })
+        .collect();
+    for kind in &kinds {
+        let BlockExceptionKind::Quality(filter) = kind else {
+            continue;
+        };
+        assert!(
+            !matches!(filter, TargetFilter::Or { .. }),
+            "the following clause must not become an exception disjunct: {filter:?}"
+        );
+        assert!(
+            !matches!(filter, TargetFilter::Typed(t) if t.type_filters == vec![TypeFilter::Creature] && t.properties.is_empty()),
+            "no exception leg may match every blocker: {filter:?}"
+        );
+    }
+    // Positive reach-guard: the same shape whose continuation closes its leg
+    // still folds, so the assertions above are the closure guard firing rather
+    // than the separator scan or the type-word guard declining.
+    let folded = parse_static_line(
+        "~ can't be blocked except by creatures with power 1 or less, and Walls.",
+    )
+    .expect("a real exception union must still parse");
+    let StaticMode::CantBeBlockedExceptBy {
+        kind: BlockExceptionKind::Quality(TargetFilter::Or { filters }),
+    } = &folded.mode
+    else {
+        panic!("expected a two-leg exception union, got {:?}", folded.mode);
+    };
+    assert_eq!(filters.len(), 2, "{filters:?}");
 }
 
 #[test]

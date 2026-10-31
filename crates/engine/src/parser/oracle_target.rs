@@ -2778,7 +2778,7 @@ pub(crate) fn parse_mass_type_union<'a>(
     text: &'a str,
     ctx: &mut ParseContext,
 ) -> (TargetFilter, &'a str) {
-    fold_type_union(text, ctx, TypeUnionLeg::TargetPhrase)
+    fold_type_union(text, ctx, TypeUnionLeg::TargetPhrase, LegClosure::OpenTail)
 }
 
 /// CR 205.2a + CR 205.3a + CR 608.2c: Which leg grammar a [`fold_type_union`]
@@ -2797,6 +2797,28 @@ pub(crate) enum TypeUnionLeg {
     /// Each leg is a [`parse_type_phrase_folding_with_ctx`] phrase, with no
     /// pluralizer — "creatures with power 2 or less and/or Walls" (Doorman).
     TypePhrase,
+}
+
+/// CR 608.2c: whether the phrase a [`fold_type_union`] call is reading is known
+/// to be a filter and NOTHING else.
+///
+/// This is a property of the CALL, not of the leg grammar — keying it off
+/// [`TypeUnionLeg`] was the issue #10364 review-2 defect: `TypeUnionLeg` names
+/// which reader parses a leg, while this names whether the text after the last
+/// leg may legitimately be something other than filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LegClosure {
+    /// The whole input is a filter phrase (the text after "can't be blocked
+    /// [except] by ", a captured `must be blocked by <quality>` span). A
+    /// continuation must therefore CLOSE its leg — see
+    /// [`type_phrase_leg_closed`] — or it was a sibling clause, not a union leg.
+    ClosedPhrase,
+    /// The input is a filter followed by text the CALLER owns, so a leg may
+    /// legitimately leave a remainder behind. `parse_mass_type_union`'s callers
+    /// in `oracle_effect::imperative` consume that remainder themselves
+    /// (`parse_trailing_zone_union`), so requiring leg closure there would
+    /// change a grammar this change does not own.
+    OpenTail,
 }
 
 fn read_type_union_leg<'a>(
@@ -2833,6 +2855,7 @@ pub(crate) fn fold_type_union<'a>(
     text: &'a str,
     ctx: &mut ParseContext,
     leg: TypeUnionLeg,
+    closure: LegClosure,
 ) -> (TargetFilter, &'a str) {
     let (mut acc, mut rest) = read_type_union_leg(text, ctx, leg);
     loop {
@@ -2887,12 +2910,13 @@ pub(crate) fn fold_type_union<'a>(
         // and an "and/or" separator there is then reported as
         // `BlockFilterPhrase::DroppedDisjunct` rather than published half-read.
         //
-        // Deliberately NOT applied to `TargetPhrase`: `parse_mass_type_union`'s
-        // callers in `oracle_effect::imperative` legitimately consume a leg's
-        // trailing remainder themselves (`parse_trailing_zone_union`), so
-        // requiring full leg consumption there would change a grammar this
-        // change does not own.
-        if matches!(leg, TypeUnionLeg::TypePhrase) && !type_phrase_leg_closed(next) {
+        // Gated on [`LegClosure`], i.e. on what the CALL is reading, not on which
+        // leg grammar reads a leg: `parse_block_exception_phrase` folds
+        // `TargetPhrase` legs over a phrase that is entirely a filter and needs
+        // this guard just as much as the `TypePhrase` readers do, while
+        // `parse_mass_type_union`'s callers own the trailing remainder and must
+        // not get it.
+        if matches!(closure, LegClosure::ClosedPhrase) && !type_phrase_leg_closed(next) {
             break;
         }
         acc = merge_or_filters(acc, leg_filter);
@@ -2911,7 +2935,12 @@ pub(crate) fn fold_type_union<'a>(
 /// input. Callers that must decline unrecognized input go through
 /// [`parse_block_filter_phrase`], which classifies the result.
 pub(crate) fn parse_filter_phrase_union(text: &str) -> (TargetFilter, &str) {
-    fold_type_union(text, &mut ParseContext::default(), TypeUnionLeg::TypePhrase)
+    fold_type_union(
+        text,
+        &mut ParseContext::default(),
+        TypeUnionLeg::TypePhrase,
+        LegClosure::ClosedPhrase,
+    )
 }
 
 /// CR 509.1b: what a blocking-restriction filter phrase turned out to be.
@@ -2921,9 +2950,33 @@ pub(crate) fn parse_filter_phrase_union(text: &str) -> (TargetFilter, &str) {
 ///
 /// * [`Self::Filter`] - a real blocker constraint; publish it.
 /// * [`Self::Unconstrained`] - the phrase named nothing the filter grammar
-///   recognizes (`TargetFilter::Any`). This is the pre-existing shape every
-///   caller already had a fall-through for, so the caller keeps that
-///   fall-through unchanged.
+///   recognizes, **as `TargetFilter::Any` specifically**. This is the
+///   pre-existing shape every caller already had a fall-through for, so the
+///   caller keeps that fall-through unchanged.
+///
+///   KNOWN LIMIT, stated because the predicate is narrower than the sentence
+///   above would suggest: `parse_type_phrase_folding` has TWO unconstrained
+///   shapes, `Any` and an EMPTY `TypedFilter`, and only the first is classified
+///   here. An empty `TypedFilter` carries no type, property or controller, so
+///   `game/filter.rs` matches every object with it - it lands in
+///   [`Self::Filter`] and is published as a restriction that constrains
+///   nothing. Live pre-existing witness, measured identically at this change's
+///   base and head: Glorfindel, Dauntless Rescuer ("can't be blocked by more
+///   than one creature each combat this turn" - the `by more than N` arm
+///   declines on the " each combat this turn" tail, the generic arm reads an
+///   empty `TypedFilter`) publishes
+///   `CantBeBlockedBy(Typed{type_filters: [], properties: []})` at
+///   `supported: true, gap_count: 0`, i.e. totally unblockable.
+///
+///   `target_filter_has_meaningful_content` is the predicate that would cover
+///   both shapes, and it is deliberately NOT used here yet, because the two
+///   families of caller fall through differently and only one of them improves:
+///   on `oracle_effect::subject`'s path the fall-through ends at `None`, so
+///   Glorfindel would become an honest gap (better) but would flip
+///   `true -> false` in coverage; on the `oracle_static` paths the fall-through
+///   is the blanket `CantBeBlocked`, which is the SAME wrongness it has today
+///   (no improvement). Tightening it is therefore a coverage-flipping change
+///   of its own, owed its own measurement, not a rider on this one.
 /// * [`Self::DroppedDisjunct`] - the phrase printed another "and/or" leg that no
 ///   leg grammar could read. The caller MUST fail closed here, and "fail closed"
 ///   means `None` for the whole line, not "skip this arm": the `can't be
@@ -2958,6 +3011,8 @@ impl<'a> BlockFilterPhrase<'a> {
         if and_or_union_separator(tail).is_some() {
             return Self::DroppedDisjunct;
         }
+        // `Any` only, NOT `!target_filter_has_meaningful_content` - see the
+        // KNOWN LIMIT on `Unconstrained`.
         if matches!(filter, TargetFilter::Any) {
             return Self::Unconstrained;
         }
@@ -2996,7 +3051,7 @@ pub(crate) fn parse_block_filter_phrase(text: &str) -> BlockFilterPhrase<'_> {
     BlockFilterPhrase::from_parts(filter, tail)
 }
 
-/// Did a `TypeUnionLeg::TypePhrase` continuation close its leg? True when
+/// Did a [`LegClosure::ClosedPhrase`] continuation close its leg? True when
 /// nothing is left but the sentence's terminal punctuation, or when the next
 /// union separator starts immediately — the two positions a union leg can end
 /// at inside a filter-only phrase.
@@ -3021,6 +3076,7 @@ pub(crate) fn parse_block_exception_phrase(text: &str) -> BlockFilterPhrase<'_> 
         text,
         &mut ParseContext::default(),
         TypeUnionLeg::TargetPhrase,
+        LegClosure::ClosedPhrase,
     );
     BlockFilterPhrase::from_parts(filter, tail)
 }
@@ -18085,6 +18141,39 @@ mod tests {
              only to the left noun; got {:?}",
             typed.properties
         );
+    }
+
+    /// CR 608.2c (issue #10364) — the tightest pin on the leg-closure guard,
+    /// directly on the reader so no upstream guard can mask it: a continuation
+    /// that leads with a type word and parses to a NON-empty filter is still
+    /// not a union leg when it leaves a verb phrase behind.
+    ///
+    /// Mutation-verified: with the `LegClosure::ClosedPhrase` guard disabled
+    /// this folds to `Or[power<=1, bare Creature]` and goes red; the positive
+    /// row below proves the separator scan and type-word guard both pass, so
+    /// the decline is the closure guard and nothing upstream of it.
+    #[test]
+    fn filter_phrase_union_does_not_fold_an_unclosed_leg() {
+        let (f, rest) = parse_filter_phrase_union(
+            "creatures with power 1 or less, and creatures blocking it get -1/-1",
+        );
+        assert!(
+            !matches!(f, TargetFilter::Or { .. }),
+            "a leg that leaves a verb phrase behind is not a union leg: {f:?}"
+        );
+        assert!(
+            rest.starts_with(", and "),
+            "the declined separator must stay in the remainder, got {rest:?}"
+        );
+        // Positive reach-guard, same input up to the continuation: a leg that
+        // DOES close folds.
+        let (folded, folded_rest) =
+            parse_filter_phrase_union("creatures with power 1 or less, and walls");
+        assert!(
+            matches!(&folded, TargetFilter::Or { filters } if filters.len() == 2),
+            "a closing continuation must still fold: {folded:?}"
+        );
+        assert_eq!(folded_rest.trim(), "");
     }
 
     /// A phrase with no continuation must return exactly what the bare leg
