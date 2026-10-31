@@ -30,9 +30,20 @@
 //! * **Calming Licid** — verbatim Oracle text, no deferral: "{W}, {T}: This
 //!   creature loses this ability and becomes an Aura enchantment with enchant
 //!   creature. …" The clause is already its own sentence, so the real card
-//!   exercises the new modification today.
+//!   exercises the new modification today — including CR 116.2c's "You may pay
+//!   {W} to end this effect", which with a `Permanent` duration is the only way
+//!   the loss ever ends.
+//!
+//! Flanking Licid prints the same predicate and gets the same modification,
+//! but its clause also states a type-set exclusion the animation grammar cannot
+//! perform ("… that reads \"Enchanted creature gains flanking\" instead of a
+//! creature"), so the CR 611.2a `Permanent` promotion is withheld from it and it
+//! keeps the duration it had before this unit. Covered by
+//! `flanking_licid_type_exclusion_is_not_promoted_to_permanent` in
+//! `parser/oracle_effect/tests.rs`.
 
 use crate::support::shared_card_db;
+use engine::ai_support::legal_actions_for_viewer;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::types::ability::{ContinuousModification, Duration};
 use engine::types::actions::GameAction;
@@ -300,5 +311,40 @@ fn calming_licid_loses_its_own_ability_when_it_becomes_an_aura() {
         outcome.state().objects[&other_licid].abilities.len(),
         1,
         "the removal is bound to the one object the effect named"
+    );
+    drop(outcome);
+
+    // CR 116.2c: "You may pay {W} to end this effect" is a special action the
+    // controller may take any time they have priority — and with the installed
+    // effect now `Duration::Permanent` (CR 611.2a) it is the ONLY way the loss
+    // ever ends. Taken through the production legality surface, never
+    // hand-constructed, so a missing enumeration entry fails here.
+    let offered: Vec<GameAction> = legal_actions_for_viewer(runner.state(), P0)
+        .0
+        .into_iter()
+        .filter(|action| matches!(action, GameAction::EndContinuousEffect { .. }))
+        .collect();
+    assert_eq!(
+        offered.len(),
+        1,
+        "CR 116.2c: exactly one pay-to-end permission must be offered, got {offered:?}"
+    );
+    runner
+        .act(offered[0].clone())
+        .expect("the offered pay-to-end special action must be legal");
+    assert_eq!(
+        costed_ability(&runner, licid),
+        Some(0),
+        "CR 116.2c: ending the effect restores the removed activated ability"
+    );
+    // Reach-guard on the same action: the animation it shared the effect with
+    // also ended, so the restoration is the whole effect expiring rather than
+    // the removal alone being special-cased.
+    assert!(
+        !runner.state().objects[&licid]
+            .card_types
+            .core_types
+            .contains(&CoreType::Enchantment),
+        "reach: the pay-to-end action ended the whole continuous effect"
     );
 }

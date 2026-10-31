@@ -1115,7 +1115,7 @@ fn stamp_permission_printed_slot(
 /// keyed on `kind`. The modification-variant match keeps a `_` arm on purpose:
 /// only three of `ContinuousModification`'s many variants carry a printed slot.
 ///
-/// CR 613.1f + CR 602.1: `RemoveSourceAbility` ("loses this ability") is the
+/// CR 113.10 + CR 602.1: `RemoveSourceAbility` ("loses this ability") is the
 /// third, and unlike the retains it is emitted by a context-free recognizer
 /// (`oracle_static::parse_continuous_modifications`), so it arrives unbound and
 /// is stamped only on the ABILITY track. A trigger item's "this ability" names

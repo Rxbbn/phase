@@ -1006,15 +1006,6 @@ fn bind_forwarded_generic_self_ref(child: &mut ResolvedAbility) {
     } = &mut child.effect
     {
         for static_def in static_abilities {
-            // CR 602.1 + CR 613.1f: "loses this ability" names an ability of the
-            // clause's OWN source. The object the producer just produced has no
-            // such ability, so forwarding this `SelfRef` would silently make the
-            // removal a no-op on the wrong permanent — see
-            // `child_removes_its_own_sources_ability`, which keeps the same
-            // child's `source_id` on its own source for the same reason.
-            if static_definition_removes_source_ability(static_def) {
-                continue;
-            }
             if matches!(
                 effect::generic_effect_application_filter(
                     target.as_ref(),
@@ -1026,29 +1017,6 @@ fn bind_forwarded_generic_self_ref(child: &mut ResolvedAbility) {
             }
         }
     }
-}
-
-/// CR 613.1f + CR 602.1: does this static remove its own source's printed
-/// activated ability ("this creature loses this ability")?
-fn static_definition_removes_source_ability(static_def: &StaticDefinition) -> bool {
-    static_def
-        .modifications
-        .iter()
-        .any(|m| matches!(m, ContinuousModification::RemoveSourceAbility { .. }))
-}
-
-/// CR 613.1f + CR 602.1: does this forwarded child remove its OWN source's
-/// printed activated ability ("this creature loses this ability")?
-fn child_removes_its_own_sources_ability(child: &ResolvedAbility) -> bool {
-    let Effect::GenericEffect {
-        static_abilities, ..
-    } = &child.effect
-    else {
-        return false;
-    };
-    static_abilities
-        .iter()
-        .any(static_definition_removes_source_ability)
 }
 
 /// CR 400.7j: point a `forward_result` child at the objects its producer moved,
@@ -1064,21 +1032,6 @@ fn rebind_child_to_forwarded_objects(
     )],
     moved: &[ObjectId],
 ) -> Vec<crate::types::identifiers::ObjectIncarnationRef> {
-    // CR 602.1 + CR 613.1f + CR 400.7j: "…, then this creature loses this
-    // ability" (Great Fang Chroniclers) names an ability of the RESOLVING
-    // ability's own source — nothing else can have it. The object the producer
-    // just produced (a conjured card, a reanimated creature) does not, so both
-    // halves of the ordinary forward rebind below are wrong for this child: the
-    // `SelfRef`→`ParentTargetSlot` rewrite would apply the removal to the
-    // produced object, and the `source_id` rebind would re-source it there too.
-    // Either way the instruction silently becomes a no-op on the wrong
-    // permanent. Keep the whole child on its own source, mirroring the
-    // `CopySpell { SelfRef }` and `CreateDelayedTrigger` carve-outs below.
-    // An ability-removal child never carries an Attach, so it contributes no
-    // attachment candidates.
-    if child_removes_its_own_sources_ability(child) {
-        return Vec::new();
-    }
     bind_forwarded_generic_self_ref(child);
     if moved.is_empty() {
         return Vec::new();

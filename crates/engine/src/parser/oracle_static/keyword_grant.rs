@@ -1426,7 +1426,7 @@ pub(crate) fn parse_continuous_modifications(text: &str) -> Vec<ContinuousModifi
             LossMember::Abilities => {
                 modifications.push(ContinuousModification::RemoveAllAbilities);
             }
-            // CR 613.1f + CR 602.1: "loses this ability" removes exactly the
+            // CR 113.10 + CR 602.1: "loses this ability" removes exactly the
             // printed activated ability the clause belongs to. The printed slot
             // is not known here — this parser has no document position — so the
             // index is left unbound and resolved post-assembly by

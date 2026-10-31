@@ -34437,7 +34437,7 @@ fn scan_loss_enumeration_recognizes_land_types() {
 /// slot left unbound for the post-assembly stamp.
 ///
 /// Cards: Great Fang Chroniclers ("…, then this creature loses this ability")
-/// and the twelve Licids, where it heads the compound predicate.
+/// and the thirteen Licids, where it heads the compound predicate.
 #[test]
 fn lose_this_ability_lowers_to_a_single_printed_ability_removal() {
     assert_eq!(

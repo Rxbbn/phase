@@ -44349,27 +44349,36 @@ pub enum ContinuousModification {
         replacement: Box<ReplacementDefinition>,
     },
     RemoveAllAbilities,
-    /// CR 613.1f + CR 611.2a: Layer 6 removal of ONE named printed activated
-    /// ability of the affected object, as opposed to `RemoveAllAbilities`'
-    /// total wipe (CR 613.1f lists ability-removing effects in layer 6).
+    /// CR 113.10 + CR 613.1f + CR 611.2a: removal of ONE named printed activated
+    /// ability, as opposed to `RemoveAllAbilities`' total wipe.
+    ///
+    /// **Authorizing rule: CR 113.10** — "Effects can add or remove abilities of
+    /// objects… An effect that removes an ability will state that the object
+    /// 'loses' that ability." CR 613.1f is the LAYER it applies in (layer 6,
+    /// ability-removing effects) and CR 113.10b ("effects that remove an ability
+    /// remove all instances of it") is why the apply arm strips every
+    /// structurally-equal instance rather than one position.
     ///
     /// Written by "<object> loses this ability": Great Fang Chroniclers
     /// ("Conjure a card named Muraganda Petroglyphs onto the battlefield, then
-    /// this creature loses this ability") and the twelve Licids ("This creature
-    /// loses this ability and becomes an Aura enchantment with enchant
-    /// creature"). CR 608.2m lets the activated ability that installs this
-    /// effect finish resolving after it has removed itself. Neither printed
-    /// text states a duration, so per CR 611.2a the installing effect carries
-    /// `Duration::Permanent` — it lasts until the end of the game (or, for a
-    /// Licid, until its CR 116.2c "pay {X} to end this effect" permission is
-    /// taken).
+    /// this creature loses this ability") and the thirteen Licids ("This
+    /// creature loses this ability and becomes an Aura enchantment with enchant
+    /// creature"), Flanking Licid included. CR 608.2m lets the activated ability
+    /// that installs this effect finish resolving after it has removed itself.
+    /// Neither printed text states a duration, so per CR 611.2a the installing
+    /// effect carries `Duration::Permanent` — it lasts until the end of the game
+    /// (or, for a Licid, until its CR 116.2c "pay {X} to end this effect"
+    /// permission is taken; `end_effect_permission_restores_the_ability` in
+    /// `tests/integration/loses_this_ability_removal.rs` drives that path).
     ///
-    /// `ability_index` addresses the affected object's own `base_abilities`
-    /// (the printed activated-ability track, CR 602.1), the index convention
+    /// `ability_index` addresses the SOURCE's own `base_abilities` (the printed
+    /// activated-ability track, CR 602.1), the index convention
     /// `RetainPrintedAbilityFromSource` already uses. It is baked as `None` by
     /// the clause lowerer — which does not know its own printed position — and
     /// resolved post-assembly by `oracle_ir::doc::stamp_printed_ability_slot`,
-    /// the same stamping pass CR 707.9a's copy-except retains use.
+    /// the same stamping pass CR 707.9a's copy-except retains use. Because the
+    /// index is the SOURCE's, the apply arm refuses any affected object that is
+    /// not that source.
     ///
     /// `Option<usize>` rather than the precedent's bare `usize` because this
     /// variant's emission is NOT gated on a `ParseContext` printed index the

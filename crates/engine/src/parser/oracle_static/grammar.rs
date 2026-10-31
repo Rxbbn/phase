@@ -1215,7 +1215,7 @@ pub(crate) fn scale_pt_quantity(amount: i32, quantity: &QuantityExpr) -> Quantit
 ///
 /// Two object shapes share the one lose-verb head: the "all [other] abilities,
 /// card types, creature types, and land types" enumeration, and the singular
-/// CR 613.1f self-reference "this ability".
+/// CR 113.10 self-reference "this ability".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LossMember {
     Abilities,
@@ -1224,11 +1224,15 @@ pub(crate) enum LossMember {
     /// CR 205.3i: land types (Alpine Moon, Lithoform Blight, Ultima, Origin of
     /// Oblivion — "loses all land types and abilities").
     LandTypes,
-    /// CR 613.1f + CR 602.1: the ONE printed activated ability whose own
+    /// CR 113.10 + CR 602.1: the ONE printed activated ability whose own
     /// resolution says so — "this creature loses this ability" (Great Fang
-    /// Chroniclers; the twelve Licids, where it heads the compound "loses this
-    /// ability and becomes an Aura enchantment with enchant creature").
-    /// Singular where `Abilities` is total.
+    /// Chroniclers; the thirteen Licids, where it heads the compound
+    /// "loses this ability and becomes an Aura enchantment with enchant
+    /// creature", and Flanking Licid's "becomes a creature enchantment that
+    /// reads \"…\" instead of a creature" variant).
+    /// CR 113.10 is the authorizing rule and names this exact predicate: "an
+    /// effect that removes an ability will state that the object 'loses' that
+    /// ability." Singular where `Abilities` is total.
     ThisAbility,
 }
 
@@ -1244,9 +1248,10 @@ pub(crate) enum LossMember {
 ///   literal substrings "loses all other card types" never appear contiguously
 ///   in the Oxford-comma form, so whole-phrase `tag()` arms would be dead code.
 ///   None of the four tags share a prefix, so `alt` ordering carries no hazard.
-/// * "this ability" — CR 613.1f's singular self-reference (Great Fang
-///   Chroniclers, the twelve Licids). Disjoint from the "all " head, so the two
-///   arms cannot shadow each other.
+/// * "this ability" — CR 113.10's singular self-reference (Great Fang
+///   Chroniclers, the thirteen Licids). CR 113.10: "An effect that removes an
+///   ability will state that the object 'loses' that ability." Disjoint from the
+///   "all " head, so the two arms cannot shadow each other.
 pub(crate) fn parse_loss_enumeration(input: &str) -> OracleResult<'_, Vec<LossMember>> {
     preceded(
         alt((tag("loses "), tag("lose "))),
@@ -1265,7 +1270,7 @@ pub(crate) fn parse_loss_enumeration(input: &str) -> OracleResult<'_, Vec<LossMe
                     )),
                 ),
             ),
-            // CR 613.1f + CR 602.1: the singular form names the one printed
+            // CR 113.10 + CR 602.1: the singular form names the one printed
             // activated ability the clause belongs to, not a category.
             value(vec![LossMember::ThisAbility], tag("this ability")),
         )),

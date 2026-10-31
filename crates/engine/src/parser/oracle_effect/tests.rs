@@ -31451,6 +31451,127 @@ fn calming_licid_loses_this_ability_is_a_stamped_single_ability_removal() {
     );
 }
 
+/// CR 113.10 + CR 400.7j: a "loses this ability" tail must NOT make its chain
+/// `forward_result`.
+///
+/// `lower::sub_targets_moved_card` stamps `forward_result` when a sub-ability
+/// anchors on the card the parent instruction just moved, detecting that by a
+/// bare `SelfRef`. A removal clause's `SelfRef` is an EXPLICIT self-reference to
+/// the printed source (CR 602.1), not that anaphor, so stamping the flag would
+/// make `effects/mod.rs` rewrite the removal onto the conjured card — which has
+/// no such ability — and silently no-op. The predicate declines it per static.
+///
+/// Revert probe: drop the `static_names_its_own_printed_ability` conjunct in
+/// `sub_targets_moved_card` and `forward_result` comes back `true`.
+#[test]
+fn loses_this_ability_tail_does_not_forward_the_conjured_card() {
+    let parsed = crate::parser::oracle::parse_oracle_text(
+        "{3}{G}: Conjure a card named Muraganda Petroglyphs onto the battlefield. \
+         Then this creature loses this ability. Activate only as a sorcery.",
+        "Great Fang Chroniclers",
+        &[],
+        &["Creature".to_string()],
+        &[],
+    );
+    let def = &parsed.abilities[0];
+    assert!(
+        matches!(def.effect.as_ref(), Effect::Conjure { .. }),
+        "reach: the head clause is still the Conjure, got {:?}",
+        def.effect
+    );
+    assert!(
+        !def.forward_result,
+        "CR 400.7j: the removal tail names its own source, so the chain must \
+         not forward the conjured card to it"
+    );
+    let sub = def
+        .sub_ability
+        .as_ref()
+        .expect("reach: the removal tail is still a chained sub-ability");
+    let Effect::GenericEffect {
+        static_abilities, ..
+    } = sub.effect.as_ref()
+    else {
+        panic!("expected the removal GenericEffect, got {:?}", sub.effect);
+    };
+    assert_eq!(
+        static_abilities[0].affected,
+        Some(TargetFilter::SelfRef),
+        "the removal still names the source itself"
+    );
+}
+
+/// CR 205.1a + CR 611.2a: the `Duration::Permanent` promotion must not reach a
+/// clause the grammar only HALF lowered.
+///
+/// Flanking Licid states a type-set exclusion ("becomes a creature enchantment
+/// that reads \"Enchanted creature gains flanking\" INSTEAD OF A CREATURE") that
+/// `parse_continuous_modifications` cannot perform — it emits
+/// `SetCardTypes{[Creature, Enchantment]}`, keeping the very type the clause
+/// removes. Promoting that clause to `Permanent` would make a board state we
+/// already know is wrong last until the end of the game instead of reverting at
+/// the cleanup step, so the promotion is withheld and the card keeps the `None`
+/// duration it had before this unit.
+///
+/// Revert probe: drop the `!predicate_states_unmodeled_type_exclusion(...)`
+/// conjunct and Flanking Licid's duration becomes `Some(Permanent)`.
+#[test]
+fn flanking_licid_type_exclusion_is_not_promoted_to_permanent() {
+    let parsed = crate::parser::oracle::parse_oracle_text(
+        "{R}, {T}: Flanking Licid loses this ability and becomes a creature \
+         enchantment that reads \"Enchanted creature gains flanking\" instead of a \
+         creature. Move Flanking Licid onto target creature. You may pay {R} to \
+         end this effect.",
+        "Flanking Licid",
+        &[],
+        &["Creature".to_string()],
+        &[],
+    );
+    let def = &parsed.abilities[0];
+    let Effect::GenericEffect {
+        static_abilities,
+        duration,
+        ..
+    } = def.effect.as_ref()
+    else {
+        panic!("expected the animation GenericEffect, got {:?}", def.effect);
+    };
+    // Reach-guard: the removal modification IS produced here, so the duration
+    // assertion below is about the promotion being withheld and nothing else.
+    assert!(
+        static_abilities[0]
+            .modifications
+            .iter()
+            .any(|m| matches!(m, ContinuousModification::RemoveSourceAbility { .. })),
+        "reach: the removal conjunct is produced, got {:?}",
+        static_abilities[0].modifications
+    );
+    assert_eq!(
+        *duration, None,
+        "a half-modelled clause keeps its pre-existing duration"
+    );
+
+    // Paired positive: the exclusion-free Aura Licids ARE promoted, so the guard
+    // is narrow rather than a blanket opt-out.
+    let aura = crate::parser::oracle::parse_oracle_text(
+        "{W}, {T}: This creature loses this ability and becomes an Aura enchantment \
+         with enchant creature. Attach it to target creature. You may pay {W} to \
+         end this effect.",
+        "Calming Licid",
+        &[],
+        &["Creature".to_string()],
+        &[],
+    );
+    let Effect::GenericEffect { duration, .. } = aura.abilities[0].effect.as_ref() else {
+        panic!("expected the Aura animation GenericEffect");
+    };
+    assert_eq!(
+        *duration,
+        Some(Duration::Permanent),
+        "CR 611.2a: the fully-modelled removal clause is still promoted"
+    );
+}
+
 #[test]
 fn return_opponents_choice_from_your_graveyard_uses_zone_choice_chain() {
     let def = parse_effect_chain(
