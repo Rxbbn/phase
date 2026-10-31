@@ -8552,12 +8552,17 @@ fn parse_graveyard_redirect_replacement(
         // dropping it is what this change exists to stop — fail closed instead.
         Outcome::ShuffleBack { .. } if consequent.is_some() => return None,
         Outcome::ShuffleBack { reveal } => {
-            // CR 701.24a + CR 701.24c: "shuffle it into its owner's library" is one
-            // shuffle instruction — the redirect moves the object and this terminal
-            // shuffle owns the single randomization. CR 400.3 is the owner-routing
-            // authority: the shuffle is scoped to the owner of the redirected
-            // object, correct under Mind Control / Threads of Disloyalty when
-            // control ≠ ownership.
+            // CR 701.24a: "shuffle it into its owner's library" is ONE shuffle
+            // instruction. The redirect is delivered by the zone pipeline, whose tail
+            // randomizes the owner's library for a placement-less library delivery —
+            // that is the instruction's one shuffle (CR 400.3: the tail shuffles the
+            // moved object's owner, correct under Mind Control / Threads of
+            // Disloyalty when control != ownership). The redirect `ChangeZone` is an
+            // event modifier the replacement pipeline applies without resolving it
+            // through `change_zone::resolve`, so it publishes no owner population;
+            // this terminal `Shuffle` carries the same owner-library scope as every
+            // other shuffle-into-library chain, so it joins that model and adds no
+            // second randomization.
             let shuffle = super::oracle_effect::imperative::owner_library_terminal_shuffle(
                 TargetFilter::Owner,
             );
