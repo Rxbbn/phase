@@ -2071,7 +2071,13 @@ pub(crate) fn materialize_token_copy_body(
     // CR 733 replay birth, so both materialize the same token.
     if let Some(double_faced) = &copy.double_faced {
         object.back_face = Some((*double_faced.other_face).clone());
-        object.transformed = double_faced.back_face_up;
+        // Mirror the source's orientation flag: a modal double-faced permanent
+        // shows its back face through `modal_back_face` (it is never
+        // "transformed", CR 712.8f), a transforming one through `transformed`.
+        let modal =
+            double_faced.other_face.layout_kind == Some(crate::types::card::LayoutKind::Modal);
+        object.modal_back_face = double_faced.back_face_up && modal;
+        object.transformed = double_faced.back_face_up && !modal;
     }
 
     // CR 707.9a + CR 702: "except it has [keyword]" — grant additional keywords

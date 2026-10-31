@@ -261,8 +261,8 @@ fn copy_of_back_face_up_modal_dfc_enters_back_face_up() {
 
     let token = &c.runner.state().objects[&c.token];
     assert!(
-        token.transformed,
-        "CR 707.8a: the token enters back face up"
+        token.modal_back_face && !token.transformed,
+        "CR 707.8a: the token enters back face up, shown the way a modal DFC shows it"
     );
     assert_eq!(token.name, "Stonewing Antagonizer");
     assert_eq!(
