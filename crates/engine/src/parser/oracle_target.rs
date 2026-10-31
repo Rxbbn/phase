@@ -18161,9 +18161,9 @@ mod tests {
             !matches!(f, TargetFilter::Or { .. }),
             "a leg that leaves a verb phrase behind is not a union leg: {f:?}"
         );
-        assert!(
-            rest.starts_with(", and "),
-            "the declined separator must stay in the remainder, got {rest:?}"
+        assert_eq!(
+            rest, ", and creatures blocking it get -1/-1",
+            "the declined separator and the whole clause must stay in the remainder"
         );
         // Positive reach-guard, same input up to the continuation: a leg that
         // DOES close folds.
