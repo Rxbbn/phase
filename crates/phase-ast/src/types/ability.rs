@@ -39648,6 +39648,40 @@ pub struct TriggerDefinitionRef {
 }
 
 impl TriggerDefinitionRef {
+    /// Yields every object incarnation this reference names, an expanded grant's provider
+    /// included (CR 400.7).
+    pub fn for_each_incarnation_mut(&mut self, f: &mut impl FnMut(ObjectId, &mut u64)) {
+        f(self.source.object_id, &mut self.source.incarnation);
+        if let TriggerDefinitionOccurrenceRef::ExpandedGrant { provider, .. } = &mut self.occurrence
+        {
+            provider.for_each_incarnation_mut(f);
+        }
+    }
+
+    /// Yields every layer-6 grant generation this reference names, an expanded grant's provider
+    /// included, keyed by the object whose allocator minted it.
+    pub fn for_each_grant_generation_mut(&mut self, f: &mut impl FnMut(ObjectId, &mut u64)) {
+        let minted_by = self.source.object_id;
+        match &mut self.occurrence {
+            TriggerDefinitionOccurrenceRef::KeywordCompanion { grant_instance, .. }
+            | TriggerDefinitionOccurrenceRef::CopyRetained { grant_instance, .. }
+            | TriggerDefinitionOccurrenceRef::Granted { grant_instance } => {
+                f(minted_by, &mut grant_instance.0);
+            }
+            TriggerDefinitionOccurrenceRef::ExpandedGrant {
+                grant_instance,
+                provider,
+                provider_output_index: _,
+            } => {
+                f(minted_by, &mut grant_instance.0);
+                provider.for_each_grant_generation_mut(f);
+            }
+            TriggerDefinitionOccurrenceRef::Printed { .. }
+            | TriggerDefinitionOccurrenceRef::CopiedValue { .. }
+            | TriggerDefinitionOccurrenceRef::Unmaterialized => {}
+        }
+    }
+
     /// CR 113.2c + CR 603.2 + CR 603.2h: the key under which `def`'s per-definition
     /// limit ledgers (once each turn, once, the first N times each turn, and the
     /// indicated action) are read and written. Every lowered half of one printed
@@ -39956,6 +39990,12 @@ impl TriggerOccurrenceState {
         self.active_grants
             .iter()
             .map(|active| (&active.producer, active.instance))
+    }
+
+    pub fn for_each_active_grant_generation_mut(&mut self, mut f: impl FnMut(&mut u64)) {
+        for active in &mut self.active_grants {
+            f(&mut active.instance.0);
+        }
     }
 }
 
