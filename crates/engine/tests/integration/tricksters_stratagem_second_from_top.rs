@@ -23,6 +23,15 @@ const TRICKSTERS_STRATAGEM: &str = "The owner of target creature an opponent con
 /// Cast the spell at P1's creature (and connive P0's own) and pass priority until the owner's choice is
 /// offered. Returns the runner, the tucked creature and P1's library fillers.
 fn cast_until_choice(fillers: &[&str]) -> (GameRunner, ObjectId, Vec<ObjectId>) {
+    cast_until_choice_with(fillers, true)
+}
+
+/// `connive_own`: supply the "up to one target creature you control" connive
+/// target (true), or decline that optional slot (false).
+fn cast_until_choice_with(
+    fillers: &[&str],
+    connive_own: bool,
+) -> (GameRunner, ObjectId, Vec<ObjectId>) {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     scenario.with_library_top(P1, fillers);
@@ -52,10 +61,12 @@ fn cast_until_choice(fillers: &[&str]) -> (GameRunner, ObjectId, Vec<ObjectId>) 
         parsed.effect
     );
 
-    runner
-        .cast(spell)
-        .target_objects(&[victim, own_creature])
-        .commit();
+    let targets: Vec<ObjectId> = if connive_own {
+        vec![victim, own_creature]
+    } else {
+        vec![victim]
+    };
+    runner.cast(spell).target_objects(&targets).commit();
     for _ in 0..16 {
         if matches!(
             runner.state().waiting_for,
@@ -99,6 +110,54 @@ fn owner_chooses_and_top_branch_is_second_from_the_top() {
         library(&runner, P1),
         vec![fillers[0], victim, fillers[1], fillers[2]],
         "top branch = second from the top (index 1), not first"
+    );
+    // The interactive continuation (the connive half) must have finished.
+    for _ in 0..8 {
+        if runner.state().stack.is_empty() {
+            break;
+        }
+        runner
+            .act(GameAction::PassPriority)
+            .expect("finish the chain");
+    }
+    assert!(runner.state().stack.is_empty(), "chain fully resolved");
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
+        "no pending prompt after the chain, got {:?}",
+        runner.state().waiting_for
+    );
+}
+
+/// CHARACTERIZATION of a PRE-EXISTING defect, not of intended behaviour.
+/// Declining the optional "up to one target creature you control" connive slot
+/// leaves the connive sub-ability inheriting the parent's target list
+/// (`targeting.rs` ~1212), and `effects/connive.rs:34-45` takes the FIRST object
+/// target (`ability.targets.iter().find_map(TargetRef::Object)`) instead of
+/// `targeting::resolved_targets(..)` as the sibling `put_on_top_or_bottom.rs:28`
+/// does. So the tucked creature itself connives: its owner draws the card above
+/// it and discards it, leaving the creature on TOP of the library - the exact
+/// outcome "second from the top" exists to prevent. Not fixed here (separate
+/// measurement); when connive.rs is fixed this assertion must flip to index 1.
+#[test]
+fn declined_connive_slot_currently_lets_the_tucked_creature_connive() {
+    let (mut runner, victim, _) =
+        cast_until_choice_with(&["Filler A", "Filler B", "Filler C"], false);
+    runner
+        .act(GameAction::ChooseTopOrBottom { top: true })
+        .expect("owner picks the top branch");
+    for _ in 0..8 {
+        if runner.state().stack.is_empty() {
+            break;
+        }
+        runner
+            .act(GameAction::PassPriority)
+            .expect("finish the chain");
+    }
+    let lib = library(&runner, P1);
+    assert_eq!(
+        lib.iter().position(|id| *id == victim),
+        Some(0),
+        "KNOWN DEFECT: victim ends on top after the mis-targeted connive, library = {lib:?}"
     );
 }
 

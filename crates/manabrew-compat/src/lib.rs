@@ -6361,6 +6361,39 @@ mod tests {
         assert_eq!(action, GameAction::ChooseTopOrBottom { top: true });
     }
 
+    /// CR 401.7: for "second from the top or on the bottom" the projected "top"
+    /// label must name the slot instead of reading as plain "top".
+    #[test]
+    fn nth_from_top_choice_is_labelled_with_its_position() {
+        let mut state = GameState::new_two_player(7);
+        let object_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Tucked Card".to_string(),
+            Zone::Library,
+        );
+        state.waiting_for = WaitingFor::TopOrBottomChoice {
+            player: PlayerId(0),
+            object_id,
+            top_position: engine::types::ability::LibraryPosition::NthFromTop { n: 2 },
+        };
+        bind_interaction_authority(&mut state, InteractionSessionId("nth-top".to_string()))
+            .expect("valid interaction authority binding");
+        let prepared = prepare_snapshot_with_prompt_id(&state, PlayerId(0), "game-a", 42).unwrap();
+        let prompt = build_prompt_input(&prepared, &lookup).expect("projection prompt");
+        let PromptInput::Upstream(UpstreamPromptInput::ChooseFromSelection(input)) = prompt else {
+            panic!("expected ChooseFromSelection, got {prompt:?}");
+        };
+        let labels: Vec<_> = input.options.iter().map(|o| o.label.clone()).collect();
+        assert!(
+            labels.iter().any(|l| l == "position 2 from the top")
+                && labels.iter().any(|l| l == "bottom")
+                && !labels.iter().any(|l| l == "top"),
+            "got {labels:?}"
+        );
+    }
+
     /// The `Select` half of the generic path: a subset choice, not a one-of.
     ///
     /// `DiscardToHandSize` (CR 514.1) is the clearest case — discard exactly

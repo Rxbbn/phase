@@ -3285,7 +3285,9 @@ fn legacy_effect(x: &Effect) -> bool {
         | Effect::ReproduceEventCounters { target, .. } => legacy_target_filter(target),
 
         Effect::PutOnTopOrBottom {
-            target, chooser, ..
+            target,
+            chooser,
+            top_position: _,
         } => {
             legacy_target_filter(target) || legacy_target_filter(chooser)
         }

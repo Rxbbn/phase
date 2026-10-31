@@ -50339,6 +50339,11 @@ fn parse_owner_of_target_puts_second_from_top() {
     );
 }
 
+/// Ordinal-generality probe for the shared `parse_nth_from_top` combinator.
+/// NOT printed text: the printed subjects are "creature an opponent controls",
+/// "nonland permanent" and "creature or enchantment", and only "second" exists
+/// in the corpus (nearest printed cards: Deem Inferior, Trickster's Stratagem).
+/// Third/fourth rows exist solely to prove the ordinal is parsed, not matched.
 #[test]
 fn parse_owner_puts_nth_from_top_or_bottom_is_ordinal_generic() {
     for (ordinal, n) in [("second", 2), ("third", 3), ("fourth", 4)] {

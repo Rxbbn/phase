@@ -14766,13 +14766,7 @@ fn parse_conjure_zone(
     // CR 401.7); the zone-only arms below would drop the ordinal.
     if let Ok((rest, n)) = preceded(
         tag::<_, _, OracleError<'_>>(" into your library "),
-        map_opt(
-            terminated(take_until(" from the top"), tag(" from the top")),
-            |ordinal_text| match super::oracle_util::parse_ordinal(ordinal_text) {
-                Some((n, tail)) if tail.trim().is_empty() => Some(n),
-                _ => None,
-            },
-        ),
+        nom_primitives::parse_nth_from_top,
     )
     .parse(lower)
     {
@@ -16095,15 +16089,19 @@ fn try_parse_owner_of_target_shuffle(
     }))
 }
 
-/// CR 400.3: Parse "the owner of target [filter] puts it into their library
-/// second from the top or on the bottom".
+/// CR 400.3 + CR 401.7: Parse "the owner of target [filter] puts it into their
+/// library <ordinal> from the top or on the bottom".
 ///
 /// Handles:
 /// - "The owner of target nonland permanent puts it into their library second from the top or on the bottom"
 /// - "The owner of target creature or enchantment puts it into their library second from the top or on the bottom"
 ///
-/// The "second from the top or on the bottom" pattern is semantically PutOnTopOrBottom (the
-/// player chooses). We map it to the same `PutOnTopOrBottom` effect.
+/// The owner chooses between the named Nth-from-the-top slot and the bottom, so
+/// this is `PutOnTopOrBottom` carrying that slot as `top_position` (CR 608.2d).
+///
+/// Only the "their library" form is recognized. The possessive "its owner's
+/// library" form is deliberately not handled: no printed card uses it, and an
+/// unrecognized clause stays `Unimplemented` (the fail-honest direction).
 fn try_parse_owner_of_target_put_second(
     tp: TextPair,
     ctx: &mut ParseContext,
@@ -16132,13 +16130,8 @@ fn try_parse_owner_of_target_put_second(
 /// bottom branch is implied by `Effect::PutOnTopOrBottom`.
 fn parse_into_library_nth_from_top_or_bottom(i: &str) -> OracleResult<'_, LibraryPosition> {
     let (i, _) = tag("into their library ").parse(i)?;
-    let (i, ordinal_text) =
-        terminated(take_until(" from the top"), tag(" from the top")).parse(i)?;
+    let (i, n) = nom_primitives::parse_nth_from_top(i)?;
     let (i, _) = tag(" or on the bottom").parse(i)?;
-    let n = match super::oracle_util::parse_ordinal(ordinal_text) {
-        Some((n, rest)) if rest.trim().is_empty() => n,
-        _ => return Err(oracle_err(i)),
-    };
     Ok((i, LibraryPosition::NthFromTop { n }))
 }
 

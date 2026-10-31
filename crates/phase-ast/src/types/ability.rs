@@ -25061,7 +25061,8 @@ pub enum Effect {
         #[serde(default = "default_target_filter_controller")]
         player: TargetFilter,
     },
-    /// Put a target on top or bottom of its owner's library.
+    /// Put a target on top or bottom of its owner's library, or (via
+    /// `top_position`) at an Nth-from-the-top slot or the bottom (CR 401.7).
     PutOnTopOrBottom {
         target: TargetFilter,
         /// CR 608.2d: the player directed by the Oracle text chooses top or bottom.
