@@ -175,6 +175,20 @@ fn black_cat_exiles_exactly_two_face_down_and_bottoms_the_other_seven() {
         "exactly the other seven are bottomed"
     );
 
+    // "in a random order": the bottom pile must not be the looked-at (pre-dig) order. The
+    // scenario seed is fixed, so this is deterministic and flips if the rest is placed in
+    // `Preserve` order.
+    let pre_dig_order: Vec<ObjectId> = looked_at_ids
+        .iter()
+        .copied()
+        .filter(|id| !chosen.contains(id))
+        .collect();
+    assert_ne!(
+        lib[2..].to_vec(),
+        pre_dig_order,
+        "the bottom seven must be randomized, not left in looked-at order"
+    );
+
     // "You may play the exiled cards": both exiled cards are playable by P0.
     let castable = spell_objects_available_to_cast(state, P0);
     for id in &chosen {

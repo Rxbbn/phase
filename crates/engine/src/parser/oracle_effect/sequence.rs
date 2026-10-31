@@ -6836,10 +6836,11 @@ pub(super) fn apply_clause_continuation(
             let d = &mut defs[bound_index];
             super::lift_distributive_exile_top_scope(&mut d.effect, &mut d.player_scope);
         }
-        // CR 702.75a + CR 406.3: "exile one of them face down" patches the
+        // CR 702.75a + CR 406.3: "exile <N> of them face down" patches the
         // preceding private `Dig` into the Hideaway shape — the controller
-        // selects ONE looked-at card and the `DigChoice` flow routes it to
-        // exile. Mirror `database/hideaway.rs`: keep_count:1, destination:Exile,
+        // selects exactly `count` looked-at cards and the `DigChoice` flow routes
+        // them to exile. Mirror `database/hideaway.rs`: keep_count: count (1 for
+        // Hideaway/Gonti, 2 for Black Cat), destination:Exile,
         // reveal stays false (CR 701.20e — the look was private), and chain a
         // `HideawayConceal` sub-ability to turn the chosen card face down and
         // link it to the source (so the trailing "you may cast that card ..."
@@ -7157,8 +7158,8 @@ pub(super) fn continuation_absorbs_current(
         // parse_followup_continuation_ast; the "exile it [face down]" clause is
         // folded into that Dig (rewritten to ExileTop) and emits no sibling def.
         ContinuationAst::ExileLookedAtCard { .. } => true,
-        // Recognition was already gated on a preceding `Dig`; the "exile one of
-        // them face down" clause patches that Dig (keep_count:1 / Exile) and
+        // Recognition was already gated on a preceding `Dig`; the "exile <N> of
+        // them face down" clause patches that Dig (keep_count: count / Exile) and
         // pushes the conceal sub-ability — it emits no sibling def.
         ContinuationAst::ExileLookedAtCardsFaceDown { .. } => true,
         ContinuationAst::ChooseAndSacrificeRestFilter { .. } => true,
@@ -8960,22 +8961,22 @@ pub(super) fn parse_followup_continuation_ast_with_search_destination(
                 all_copies: copy_retarget_clause_all_copies(&lower).unwrap_or(false),
             })
         }
-        // CR 702.75a + CR 406.3: "exile one of them face down" after a private
+        // CR 702.75a + CR 406.3: "exile <N> of them face down" after a private
         // `Dig` (the "look at the top N cards of <player>'s library" look step)
-        // — the Gonti, Lord of Luxury class. The controller selects ONE of the N
-        // looked-at cards and exiles it face down. Patches the `Dig` into the
-        // Hideaway shape (keep_count: 1, destination: Exile) + chains a
-        // `HideawayConceal` so the player-selected dug card is the one exiled
+        // — the Gonti, Lord of Luxury class (one) and Black Cat, Cunning Thief
+        // (two). The controller selects exactly `count` of the looked-at cards and
+        // exiles them face down. Patches the `Dig` into the
+        // Hideaway shape (keep_count: count, destination: Exile) + chains a
+        // `HideawayConceal` so the player-selected dug cards are the ones exiled
         // face down and linked to the source — NOT a sibling
         // `ChangeZone { ParentTarget }`, which exiled the trigger source itself.
         // `reveal: false` scopes this to the private look form.
         Effect::Dig { reveal: false, .. }
-            if parse_exile_n_of_them_face_down(&lower).is_some() =>
+            if let Some((count, enter_with_counters)) =
+                parse_exile_n_of_them_face_down(&lower) =>
         {
             // CR 122.1: carry any "... face down with a <type> counter on it"
             // rider so the fusion places the counters on the CHOSEN dug card.
-            let (count, enter_with_counters) =
-                parse_exile_n_of_them_face_down(&lower).unwrap_or_default();
             Some(ContinuationAst::ExileLookedAtCardsFaceDown {
                 count,
                 enter_with_counters,
@@ -17112,7 +17113,7 @@ mod tests {
             parse_exile_n_of_them_face_down("exile three of those cards face down"),
             Some((3, Vec::new()))
         );
-        assert!(parse_exile_n_of_them_face_down("exile zero of them face down").is_none());
+        assert!(parse_exile_n_of_them_face_down("exile 0 of them face down").is_none());
     }
 
     /// Black Cat: "exile two of them face down" after a private `Dig` is the plural
