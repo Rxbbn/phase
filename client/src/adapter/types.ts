@@ -2271,10 +2271,9 @@ export interface StackEntryDisplay {
 
 // ── Pending Cast (for target selection) ──────────────────────────────────
 
-export interface DeferredSacrificeSelection {
-  object_id: ObjectId;
-  filter: TargetFilter;
-}
+export type DeferredSpellSacrifice =
+  | { type: "Selected"; object_id: ObjectId; filter: TargetFilter }
+  | { type: "All"; filter: TargetFilter };
 
 export interface PendingCast {
   object_id: ObjectId;
@@ -2284,7 +2283,7 @@ export interface PendingCast {
   activation_cost?: SerializedAbilityCost;
   activation_ability_index?: number;
   target_constraints?: Array<{ type: string }>;
-  deferred_sacrificed_permanents?: DeferredSacrificeSelection[];
+  deferred_sacrificed_permanents?: DeferredSpellSacrifice[];
   // CR 118.3a: pip ids the caster pinned to direct payment. `#[serde(default,
   // skip_serializing_if = "Vec::is_empty")]` — absent when no pin is recorded.
   pinned_pool_units?: number[];
