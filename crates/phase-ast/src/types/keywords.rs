@@ -237,6 +237,7 @@ pub fn is_ability_cost_supported_for_morph(cost: &AbilityCost) -> bool {
         | AbilityCost::PerCounter { .. }
         | AbilityCost::KeywordCostOfCastSpell { .. }
         | AbilityCost::GetPlayerCounters { .. }
+        | AbilityCost::SayPhrase { .. }
         | AbilityCost::Unimplemented { .. } => false,
     }
 }
@@ -5278,6 +5279,23 @@ mod tests {
             let json = serde_json::to_value(&kw).unwrap();
             let deserialized: Keyword = serde_json::from_value(json.clone()).unwrap();
             assert_eq!(kw, deserialized, "round-trip failed for {json}");
+        }
+    }
+
+    /// CR 702.5a: Entangling Vines — "Enchant tapped creature" keeps the tapped
+    /// status on the creature leg; "untapped" is the symmetric adjective.
+    #[test]
+    fn parse_enchant_tapped_and_untapped_creature() {
+        for (phrase, prop) in [
+            ("Enchant:tapped creature", FilterProp::Tapped),
+            ("Enchant:untapped creature", FilterProp::Untapped),
+        ] {
+            let Keyword::Enchant(TargetFilter::Typed(tf)) = Keyword::from_str(phrase).unwrap()
+            else {
+                panic!("expected typed Enchant for {phrase}");
+            };
+            assert_eq!(tf.type_filters, vec![TypeFilter::Creature]);
+            assert_eq!(tf.properties, vec![prop], "{phrase}");
         }
     }
 
